@@ -1,0 +1,26 @@
+diff --git a/js/src/old-configure.in b/js/src/old-configure.in
+index eaa9a5ccd302..1ff7303e1984 100644
+--- a/js/src/old-configure.in
++++ b/js/src/old-configure.in
+@@ -105,7 +105,7 @@ case "$target" in
+         WIN32_GUI_EXE_LDFLAGS=-mwindows
+     else
+         TARGET_COMPILER_ABI=msvc
+-        WIN32_SUBSYSTEM_VERSION=10.0
++        WIN32_SUBSYSTEM_VERSION=5.01
+         WIN32_CONSOLE_EXE_LDFLAGS=-SUBSYSTEM:CONSOLE,$WIN32_SUBSYSTEM_VERSION
+         WIN32_GUI_EXE_LDFLAGS=-SUBSYSTEM:WINDOWS,$WIN32_SUBSYSTEM_VERSION
+         DSO_LDOPTS=-SUBSYSTEM:WINDOWS,$WIN32_SUBSYSTEM_VERSION
+diff --git a/old-configure.in b/old-configure.in
+index db2fd05e6ef8..707a6e1f0433 100644
+--- a/old-configure.in
++++ b/old-configure.in
+@@ -98,7 +98,7 @@ case "$target" in
+         LDFLAGS="$LDFLAGS -Wl,--no-insert-timestamp"
+     else
+         TARGET_COMPILER_ABI=msvc
+-        WIN32_SUBSYSTEM_VERSION=10.0
++        WIN32_SUBSYSTEM_VERSION=5.01
+         WIN32_CONSOLE_EXE_LDFLAGS=-SUBSYSTEM:CONSOLE,$WIN32_SUBSYSTEM_VERSION
+         WIN32_GUI_EXE_LDFLAGS=-SUBSYSTEM:WINDOWS,$WIN32_SUBSYSTEM_VERSION
+         DSO_LDOPTS=-SUBSYSTEM:WINDOWS,$WIN32_SUBSYSTEM_VERSION
