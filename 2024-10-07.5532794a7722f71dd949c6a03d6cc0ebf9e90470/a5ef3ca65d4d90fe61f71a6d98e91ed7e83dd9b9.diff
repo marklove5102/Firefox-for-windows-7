@@ -1,0 +1,1080 @@
+diff --git a/browser/base/content/browser-addons.js b/browser/base/content/browser-addons.js
+index c52caf1a15db..13bf4bc11caf 100644
+--- a/browser/base/content/browser-addons.js
++++ b/browser/base/content/browser-addons.js
+@@ -1692,9 +1692,7 @@ var gUnifiedExtensions = {
+     // This is where we are going to re-insert the extension widgets (DOM
+     // nodes) but we need to account for some hidden DOM nodes already present
+     // in this container when determining where to put the nodes back.
+-    const container = CustomizableUI.getCustomizationTarget(
+-      document.getElementById(area)
+-    );
++    const container = document.getElementById(area);
+ 
+     let moved = false;
+     let currentPosition = 0;
+diff --git a/browser/base/content/browser-init.js b/browser/base/content/browser-init.js
+index 674b1b7515f4..a3c3f46dff09 100644
+--- a/browser/base/content/browser-init.js
++++ b/browser/base/content/browser-init.js
+@@ -144,25 +144,16 @@ var gBrowserInit = {
+       "BrowserToolbarPalette"
+     ).content;
+ 
+-    let isVerticalTabs = Services.prefs.getBoolPref(
+-      "sidebar.verticalTabs",
+-      false
+-    );
+-    let nonRemovables;
+-    let isPopup = !window.toolbar.visible;
+-
+     // We don't want these normally non-removable elements to get put back into the
+     // tabstrip if we're initializing with vertical tabs
+-    if (isVerticalTabs && !isPopup) {
+-      nonRemovables = [
+-        gBrowser.tabContainer,
+-        document.getElementById("alltabs-button"),
+-      ];
+-      for (let elem of nonRemovables) {
+-        elem.setAttribute("removable", "true");
+-        // tell CUI to ignore this element when it builds the toolbar areas
+-        elem.setAttribute("skipintoolbarset", "true");
+-      }
++    let nonRemovables = [
++      gBrowser.tabContainer,
++      document.getElementById("alltabs-button"),
++    ];
++    for (let elem of nonRemovables) {
++      elem.setAttribute("removable", "true");
++      // tell CUI to ignore this element when it builds the toolbar areas
++      elem.setAttribute("skipintoolbarset", "true");
+     }
+     for (let area of CustomizableUI.areas) {
+       let type = CustomizableUI.getAreaType(area);
+@@ -171,35 +162,11 @@ var gBrowserInit = {
+         CustomizableUI.registerToolbarNode(node);
+       }
+     }
+-    if (isVerticalTabs && !isPopup) {
+-      // Show the vertical tabs toolbar
+-      setToolbarVisibility(
+-        document.getElementById(CustomizableUI.AREA_VERTICAL_TABSTRIP),
+-        true,
+-        false,
+-        false
+-      );
+-      let tabstripToolbar = document.getElementById(
+-        CustomizableUI.AREA_TABSTRIP
+-      );
+-      let wasCollapsed = tabstripToolbar.collapsed;
+-      TabBarVisibility.update();
+-      if (tabstripToolbar.collapsed !== wasCollapsed) {
+-        let eventParams = {
+-          detail: {
+-            visible: !tabstripToolbar.collapsed,
+-          },
+-          bubbles: true,
+-        };
+-        let event = new CustomEvent("toolbarvisibilitychange", eventParams);
+-        tabstripToolbar.dispatchEvent(event);
+-      }
+-
+-      for (let elem of nonRemovables) {
+-        elem.setAttribute("removable", "false");
+-        elem.removeAttribute("skipintoolbarset");
+-      }
++    for (let elem of nonRemovables) {
++      elem.setAttribute("removable", "false");
++      elem.removeAttribute("skipintoolbarset");
+     }
++
+     BrowserSearch.initPlaceHolder();
+ 
+     // Hack to ensure that the various initial pages favicon is loaded
+diff --git a/browser/base/content/browser-tabsintitlebar.js b/browser/base/content/browser-tabsintitlebar.js
+index 84e2c4523711..d7f71ed45082 100644
+--- a/browser/base/content/browser-tabsintitlebar.js
++++ b/browser/base/content/browser-tabsintitlebar.js
+@@ -84,7 +84,6 @@ var TabsInTitlebar = {
+     }
+ 
+     ToolbarIconColor.inferFromText("tabsintitlebar", allowed);
+-    TabBarVisibility.update(true);
+   },
+ 
+   uninit() {
+diff --git a/browser/base/content/navigator-toolbox.inc.xhtml b/browser/base/content/navigator-toolbox.inc.xhtml
+index 492172b010b0..f13deb4ff12f 100644
+--- a/browser/base/content/navigator-toolbox.inc.xhtml
++++ b/browser/base/content/navigator-toolbox.inc.xhtml
+@@ -5,110 +5,113 @@
+ <toolbox id="navigator-toolbox">
+   <script src="chrome://browser/content/navigator-toolbox.js" />
+ 
+-  <!-- Menu -->
+-  <toolbar type="menubar" id="toolbar-menubar"
+-           class="browser-toolbar chromeclass-menubar browser-titlebar titlebar-color"
+-           customizable="true"
+-           mode="icons"
+-           context="toolbar-context-menu">
+-    <toolbaritem id="menubar-items" align="center">
++  <vbox id="titlebar">
++    <!-- Menu -->
++    <toolbar type="menubar" id="toolbar-menubar"
++             class="browser-toolbar chromeclass-menubar titlebar-color"
++             customizable="true"
++             mode="icons"
++             context="toolbar-context-menu">
++      <toolbaritem id="menubar-items" align="center">
+ # The entire main menubar is placed into browser-menubar.inc, so that it can be
+ # shared with other top level windows in macWindow.inc.xhtml.
+ #include browser-menubar.inc
+-    </toolbaritem>
+-    <spacer flex="1" skipintoolbarset="true" style="order: 1000;"/>
++      </toolbaritem>
++      <spacer flex="1" skipintoolbarset="true" style="order: 1000;"/>
+ #include titlebar-items.inc.xhtml
+-  </toolbar>
++    </toolbar>
+ 
+-  <toolbar id="TabsToolbar"
+-           class="browser-toolbar browser-titlebar titlebar-color"
+-           fullscreentoolbar="true"
+-           customizable="true"
+-           customizationtarget="TabsToolbar-customization-target"
+-           mode="icons"
+-           data-l10n-id="tabs-toolbar"
+-           context="toolbar-context-menu"
+-           flex="1">
++    <toolbar id="TabsToolbar"
++             class="browser-toolbar titlebar-color"
++             fullscreentoolbar="true"
++             customizable="true"
++             customizationtarget="TabsToolbar-customization-target"
++             mode="icons"
++             data-l10n-id="tabs-toolbar"
++             context="toolbar-context-menu"
++             flex="1">
+ 
+-    <hbox class="titlebar-spacer" type="pre-tabs"/>
++      <hbox class="titlebar-spacer" type="pre-tabs"/>
+ 
+-    <hbox flex="1" align="end" class="toolbar-items">
+-      <toolbartabstop/>
+-      <hbox id="TabsToolbar-customization-target" flex="1">
+-        <toolbarbutton id="firefox-view-button"
+-                       class="toolbarbutton-1 chromeclass-toolbar-additional"
+-                       data-l10n-id="toolbar-button-firefox-view-2"
+-                       role="button"
+-                       aria-pressed="false"
+-                       cui-areatype="toolbar"
+-                       removable="true"/>
+-
+-        <tabs id="tabbrowser-tabs"
+-              is="tabbrowser-tabs"
+-              aria-multiselectable="true"
+-              setfocus="false"
+-              tooltip="tabbrowser-tab-tooltip"
+-              orient="horizontal"
+-              stopwatchid="FX_TAB_CLICK_MS">
+-          <hbox class="tab-drop-indicator" hidden="true"/>
++      <hbox flex="1" align="end" class="toolbar-items">
++        <toolbartabstop/>
++        <hbox id="TabsToolbar-customization-target" flex="1">
++          <toolbarbutton id="firefox-view-button"
++                         class="toolbarbutton-1 chromeclass-toolbar-additional"
++                         data-l10n-id="toolbar-button-firefox-view-2"
++                         role="button"
++                         aria-pressed="false"
++                         cui-areatype="toolbar"
++                         removable="true"/>
++
++          <tabs id="tabbrowser-tabs"
++                is="tabbrowser-tabs"
++                aria-multiselectable="true"
++                setfocus="false"
++                tooltip="tabbrowser-tab-tooltip"
++                orient="horizontal"
++                stopwatchid="FX_TAB_CLICK_MS">
++            <hbox class="tab-drop-indicator" hidden="true"/>
+ # If the name (tabbrowser-arrowscrollbox) or structure of this changes
+ # significantly, there is an optimization in
+ # DisplayPortUtils::MaybeCreateDisplayPortInFirstScrollFrameEncountered based
+ # the current structure that we may want to revisit.
+-          <html:div id="vertical-pinned-tabs-container" tabindex="-1"></html:div>
+-          <html:div id="vertical-pinned-tabs-container-separator"></html:div>
+-          <arrowscrollbox id="tabbrowser-arrowscrollbox" orient="horizontal" flex="1" clicktoscroll="" scrolledtostart="" scrolledtoend="">
+-            <tab is="tabbrowser-tab" class="tabbrowser-tab" selected="true" visuallyselected="" fadein=""/>
+-            <hbox id="tabbrowser-arrowscrollbox-periphery">
+-              <toolbartabstop/>
+-              <toolbarbutton id="tabs-newtab-button"
+-                             class="toolbarbutton-1"
+-                             command="cmd_newNavigatorTab"
+-                             tooltip="dynamic-shortcut-tooltip"
+-                             data-l10n-id="tabs-toolbar-new-tab"/>
+-              <spacer class="closing-tabs-spacer" style="width: 0;"/>
+-            </hbox>
+-          </arrowscrollbox>
+-          <toolbarbutton id="vertical-tabs-newtab-button"
+-                              class="toolbarbutton-1"
+-                              command="cmd_newNavigatorTab"
+-                              tooltip="dynamic-shortcut-tooltip"
+-                              data-l10n-id="tabs-toolbar-new-tab"/>
+-          <html:span id="tabbrowser-tab-a11y-desc" hidden="true"/>
+-        </tabs>
+-
+-        <toolbarbutton id="new-tab-button"
+-                       class="toolbarbutton-1 chromeclass-toolbar-additional"
+-                       data-l10n-id="tabs-toolbar-new-tab"
+-                       command="cmd_newNavigatorTab"
+-                       tooltip="dynamic-shortcut-tooltip"
+-                       ondrop="newTabButtonObserver.onDrop(event)"
+-                       ondragover="newTabButtonObserver.onDragOver(event)"
+-                       ondragenter="newTabButtonObserver.onDragOver(event)"
+-                       cui-areatype="toolbar"
+-                       removable="true"/>
+-
+-        <toolbarbutton id="alltabs-button"
+-                       class="toolbarbutton-1 chromeclass-toolbar-additional tabs-alltabs-button"
+-                       delegatesanchor="true"
+-                       badged="true"
+-                       data-l10n-id="tabs-toolbar-list-all-tabs"
+-                       removable="false"/>
++            <html:div id="vertical-pinned-tabs-container" tabindex="-1"></html:div>
++            <html:div id="vertical-pinned-tabs-container-separator"></html:div>
++            <arrowscrollbox id="tabbrowser-arrowscrollbox" orient="horizontal" flex="1" clicktoscroll="" scrolledtostart="" scrolledtoend="">
++              <tab is="tabbrowser-tab" class="tabbrowser-tab" selected="true" visuallyselected="" fadein=""/>
++              <hbox id="tabbrowser-arrowscrollbox-periphery">
++                <toolbartabstop/>
++                <toolbarbutton id="tabs-newtab-button"
++                               class="toolbarbutton-1"
++                               command="cmd_newNavigatorTab"
++                               tooltip="dynamic-shortcut-tooltip"
++                               data-l10n-id="tabs-toolbar-new-tab"/>
++                <spacer class="closing-tabs-spacer" style="width: 0;"/>
++              </hbox>
++            </arrowscrollbox>
++            <toolbarbutton id="vertical-tabs-newtab-button"
++                                class="toolbarbutton-1"
++                                command="cmd_newNavigatorTab"
++                                tooltip="dynamic-shortcut-tooltip"
++                                data-l10n-id="tabs-toolbar-new-tab"/>
++            <html:span id="tabbrowser-tab-a11y-desc" hidden="true"/>
++          </tabs>
++
++          <toolbarbutton id="new-tab-button"
++                         class="toolbarbutton-1 chromeclass-toolbar-additional"
++                         data-l10n-id="tabs-toolbar-new-tab"
++                         command="cmd_newNavigatorTab"
++                         tooltip="dynamic-shortcut-tooltip"
++                         ondrop="newTabButtonObserver.onDrop(event)"
++                         ondragover="newTabButtonObserver.onDragOver(event)"
++                         ondragenter="newTabButtonObserver.onDragOver(event)"
++                         cui-areatype="toolbar"
++                         removable="true"/>
++
++          <toolbarbutton id="alltabs-button"
++                         class="toolbarbutton-1 chromeclass-toolbar-additional tabs-alltabs-button"
++                         delegatesanchor="true"
++                         badged="true"
++                         data-l10n-id="tabs-toolbar-list-all-tabs"
++                         removable="false"/>
++        </hbox>
+       </hbox>
+-    </hbox>
+ 
+-    <hbox class="titlebar-spacer" type="post-tabs"/>
++      <hbox class="titlebar-spacer" type="post-tabs"/>
+ 
+-    <hbox id="private-browsing-indicator-with-label">
+-      <image class="private-browsing-indicator-icon"/>
+-      <label data-l10n-id="private-browsing-indicator-label"></label>
+-    </hbox>
+-    <toolbarbutton id="content-analysis-indicator"
+-                   class="toolbarbutton-1 content-analysis-indicator-icon"/>
++      <hbox id="private-browsing-indicator-with-label">
++        <image class="private-browsing-indicator-icon"/>
++        <label data-l10n-id="private-browsing-indicator-label"></label>
++      </hbox>
++      <toolbarbutton id="content-analysis-indicator"
++                     class="toolbarbutton-1 content-analysis-indicator-icon"/>
+ 
+ #include titlebar-items.inc.xhtml
+ 
+-  </toolbar>
++    </toolbar>
++
++  </vbox>
+ 
+   <toolbar id="nav-bar"
+            class="browser-toolbar chromeclass-location"
+@@ -123,7 +126,6 @@
+            addon-webext-overflowtarget="overflowed-extensions-list"
+            context="toolbar-context-menu">
+ 
+-    <hbox class="titlebar-spacer" type="pre-tabs"/>
+     <toolbartabstop/>
+ 
+     <hbox id="nav-bar-customization-target" flex="1">
+@@ -497,8 +499,6 @@
+                      consumeanchor="PanelUI-button"
+                      data-l10n-id="appmenu-menu-button-closed2"/>
+     </toolbaritem>
+-    <hbox class="titlebar-spacer" type="post-tabs"/>
+-#include titlebar-items.inc.xhtml
+   </toolbar>
+ 
+   <toolbar id="PersonalToolbar"
+diff --git a/browser/components/customizableui/CustomizableUI.sys.mjs b/browser/components/customizableui/CustomizableUI.sys.mjs
+index cbdd9490298d..4dd3fa7ec414 100644
+--- a/browser/components/customizableui/CustomizableUI.sys.mjs
++++ b/browser/components/customizableui/CustomizableUI.sys.mjs
+@@ -2673,16 +2673,6 @@ var CustomizableUIInternal = {
+     this.saveState();
+     gDirtyAreaCache.add(oldPlacement.area);
+ 
+-    // If we're in vertical tabs, ensure we don't restore the widget when we toggle back
+-    // to horizontal tabs.
+-    if (
+-      !gInBatchStack &&
+-      CustomizableUI.verticalTabsEnabled &&
+-      oldPlacement.area == CustomizableUI.AREA_TABSTRIP
+-    ) {
+-      this.deleteWidgetInSavedHorizontalTabStripState(aWidgetId);
+-    }
+-
+     this.notifyListeners("onWidgetRemoved", aWidgetId, oldPlacement.area);
+   },
+ 
+@@ -2908,15 +2898,6 @@ var CustomizableUIInternal = {
+     this.endBatchUpdate();
+   },
+ 
+-  deleteWidgetInSavedHorizontalTabStripState(aWidgetId) {
+-    const savedPlacements = this.getSavedHorizontalSnapshotState();
+-    let position = savedPlacements.indexOf(aWidgetId);
+-    if (position != -1) {
+-      savedPlacements.splice(position, 1);
+-      this.saveHorizontalTabStripState(savedPlacements);
+-    }
+-  },
+-
+   saveHorizontalTabStripState(placements = []) {
+     if (!placements.length) {
+       placements = this.getAreaPlacementsForSaving(
+@@ -4259,17 +4240,14 @@ var CustomizableUIInternal = {
+       isVertical: toVertical,
+     });
+ 
++    lazy.log.debug("Reverting widgets to be non-removable");
++    changeWidgetRemovability("tabbrowser-tabs", false);
++    changeWidgetRemovability("alltabs-button", false);
++
+     this.setToolbarVisibility(
+       CustomizableUI.AREA_VERTICAL_TABSTRIP,
+       toVertical
+     );
+-    this.setToolbarVisibility(CustomizableUI.AREA_TABSTRIP, !toVertical);
+-    changeWidgetRemovability("tabbrowser-tabs", false);
+-    changeWidgetRemovability("alltabs-button", false);
+-
+-    for (let [win] of gBuildWindows) {
+-      win.TabBarVisibility.update(true);
+-    }
+   },
+ };
+ Object.freeze(CustomizableUIInternal);
+diff --git a/browser/components/customizableui/test/browser_tabbar_big_widgets.js b/browser/components/customizableui/test/browser_tabbar_big_widgets.js
+index 763d137f7804..2eae968656e5 100644
+--- a/browser/components/customizableui/test/browser_tabbar_big_widgets.js
++++ b/browser/components/customizableui/test/browser_tabbar_big_widgets.js
+@@ -6,7 +6,7 @@ const kButtonId = "test-tabbar-size-with-large-buttons";
+ 
+ function test() {
+   registerCleanupFunction(cleanup);
+-  let titlebar = document.getElementById("TabsToolbar");
++  let titlebar = document.getElementById("titlebar");
+   let originalHeight = titlebar.getBoundingClientRect().height;
+   let button = document.createXULElement("toolbarbutton");
+   button.id = kButtonId;
+diff --git a/browser/components/extensions/test/browser/browser.toml b/browser/components/extensions/test/browser/browser.toml
+index 08902ae12b5f..4a81c14da582 100644
+--- a/browser/components/extensions/test/browser/browser.toml
++++ b/browser/components/extensions/test/browser/browser.toml
+@@ -702,5 +702,3 @@ tags = "fullscreen"
+ 
+ ["browser_unified_extensions_overflowable_toolbar.js"]
+ tags = "overflowable-toolbar"
+-
+-["browser_unified_extensions_vertical_tabs.js"]
+diff --git a/browser/components/extensions/test/browser/browser_unified_extensions_vertical_tabs.js b/browser/components/extensions/test/browser/browser_unified_extensions_vertical_tabs.js
+deleted file mode 100644
+index fbf0542801ad..000000000000
+--- a/browser/components/extensions/test/browser/browser_unified_extensions_vertical_tabs.js
++++ /dev/null
+@@ -1,236 +0,0 @@
+-/* Any copyright is dedicated to the Public Domain.
+-   http://creativecommons.org/publicdomain/zero/1.0/ */
+-
+-/**
+- * This file tests the behaviour of extensions in tabstrip and extensions panel with
+- * vertical tabs enabled and disabled.
+- */
+-
+-"use strict";
+-
+-loadTestSubscript("head_unified_extensions.js");
+-
+-async function installTabstripExtension() {
+-  let extension = ExtensionTestUtils.loadExtension({
+-    manifest: {
+-      browser_action: {
+-        browser_style: true,
+-        default_area: "tabstrip",
+-      },
+-    },
+-    useAddonManager: "temporary",
+-  });
+-  await extension.startup();
+-  return extension;
+-}
+-
+-add_setup(async function () {
+-  registerCleanupFunction(async () => {
+-    await CustomizableUI.reset();
+-  });
+-
+-  await SpecialPowers.pushPrefEnv({
+-    set: [
+-      ["sidebar.revamp", true],
+-      ["sidebar.verticalTabs", false],
+-    ],
+-  });
+-});
+-
+-/**
+- * Tests that extension widgets are moved between the tabstrip toolbar and the unified
+- * extensions menu when vertical tabs are enabled and disabled.
+- */
+-add_task(async function test_widgets_in_tabstrip() {
+-  const extension = await installTabstripExtension();
+-  const tabstripCUITarget = CustomizableUI.getCustomizationTarget(
+-    document.querySelector("#TabsToolbar")
+-  );
+-  const actionNode = tabstripCUITarget.querySelector(
+-    ".webextension-browser-action"
+-  );
+-  is(
+-    actionNode && actionNode.dataset.extensionid,
+-    extension.id,
+-    "Found the installed extension in the tabstrip toolbar"
+-  );
+-
+-  let widgetId = AppUiTestInternals.getBrowserActionWidgetId(extension.id);
+-  ok(
+-    CustomizableUI.getWidgetIdsInArea(CustomizableUI.AREA_TABSTRIP).includes(
+-      widgetId
+-    ),
+-    "Extension widget is in the tabstrip"
+-  );
+-
+-  // enable vertical tabs, confirm toolbar is hidden and widget nodes have moved to the extensions menu
+-  let toolbarChanged = BrowserTestUtils.waitForEvent(
+-    window,
+-    "toolbarvisibilitychange"
+-  );
+-  await SpecialPowers.pushPrefEnv({
+-    set: [["sidebar.verticalTabs", true]],
+-  });
+-  await toolbarChanged;
+-
+-  ok(
+-    BrowserTestUtils.isHidden(tabstripCUITarget),
+-    "The tabstrip toolbar is now hidden"
+-  );
+-  // Note: the gUnifiedExtensions implementation leaves the widget in the customizable
+-  // area, but moves/removes the nodes so it looks empty
+-  ok(
+-    !tabstripCUITarget.querySelector(".webextension-browser-action"),
+-    "There are no webextension widget nodes in the tabstrip toolbar anymore"
+-  );
+-  ok(
+-    CustomizableUI.getWidgetIdsInArea(CustomizableUI.AREA_TABSTRIP).includes(
+-      widgetId
+-    ),
+-    "CUI still thinks the extension widget is in the tabstrip"
+-  );
+-
+-  await openExtensionsPanel();
+-  ok(
+-    getUnifiedExtensionsItem(extension.id),
+-    "The extension is represented as an item in the unified extensions panel"
+-  );
+-  await closeExtensionsPanel();
+-
+-  // disable vertical tabs, confirm toolbar is visible and widgets have been restored
+-  // to the tabstrip toolbar
+-  toolbarChanged = BrowserTestUtils.waitForEvent(
+-    window,
+-    "toolbarvisibilitychange"
+-  );
+-  await SpecialPowers.popPrefEnv();
+-  await toolbarChanged;
+-
+-  ok(
+-    BrowserTestUtils.isVisible(tabstripCUITarget),
+-    "The tabstrip toolbar is now visible"
+-  );
+-  ok(
+-    tabstripCUITarget.querySelector(".webextension-browser-action"),
+-    "The webextension widget is back in the tabstrip toolbar"
+-  );
+-  ok(
+-    CustomizableUI.getWidgetIdsInArea(CustomizableUI.AREA_TABSTRIP).includes(
+-      widgetId
+-    ),
+-    "Extension widget is still in the tabstrip"
+-  );
+-
+-  // Ensure the widget is still customizable and can be moved to another area
+-  ok(
+-    !document.querySelector("#nav-bar .webextension-browser-action"),
+-    "There are currently no webextension widgets in the nav-bar toolbar"
+-  );
+-
+-  CustomizableUI.addWidgetToArea(widgetId, CustomizableUI.AREA_NAVBAR);
+-  ok(
+-    document.querySelector("#nav-bar .webextension-browser-action"),
+-    "The webextension widget is now in the nav-bar toolbar"
+-  );
+-  ok(
+-    CustomizableUI.getWidgetIdsInArea(CustomizableUI.AREA_NAVBAR).includes(
+-      widgetId
+-    ),
+-    "Extension widget is now in the nav-bar"
+-  );
+-
+-  await extension.unload();
+-  await CustomizableUI.reset();
+-});
+-
+-async function unpinFromToolbar(extension, win = window) {
+-  const contextMenu = await openUnifiedExtensionsContextMenu(extension.id, win);
+-  const pinToToolbarItem = contextMenu.querySelector(
+-    ".unified-extensions-context-menu-pin-to-toolbar"
+-  );
+-  ok(pinToToolbarItem, "expected 'pin to toolbar' menu item");
+-  is(
+-    pinToToolbarItem.getAttribute("checked"),
+-    "true",
+-    "pin menu item is currently checked"
+-  );
+-  const hidden = BrowserTestUtils.waitForEvent(
+-    win.gUnifiedExtensions.panel,
+-    "popuphidden",
+-    true
+-  );
+-  contextMenu.activateItem(pinToToolbarItem);
+-  await hidden;
+-}
+-
+-/**
+- * Tests that extension widgets which un-pinned from the tabstrip while it is hidden
+- * remain that way when the vertical tabs are disabled and that toolbar is made visble.
+- */
+-add_task(async function test_unpin_from_tabstrip_while_hidden() {
+-  const tabstripCUITarget = document.querySelector("#TabsToolbar");
+-  const extension = await installTabstripExtension();
+-  const widgetId = AppUiTestInternals.getBrowserActionWidgetId(extension.id);
+-  is(
+-    CustomizableUI.getPlacementOfWidget(widgetId)?.area,
+-    CustomizableUI.AREA_TABSTRIP,
+-    `widget located in correct area`
+-  );
+-
+-  let toolbarChanged = BrowserTestUtils.waitForEvent(
+-    window,
+-    "toolbarvisibilitychange"
+-  );
+-  await SpecialPowers.pushPrefEnv({
+-    set: [["sidebar.verticalTabs", true]],
+-  });
+-  await toolbarChanged;
+-  ok(
+-    BrowserTestUtils.isHidden(tabstripCUITarget),
+-    "The tabstrip area is hidden"
+-  );
+-
+-  // Unpin the extension using the context menu on the item in the panel
+-  await openExtensionsPanel();
+-  ok(
+-    getUnifiedExtensionsItem(extension.id),
+-    "The extension is represented as an item in the unified extensions panel"
+-  );
+-
+-  await unpinFromToolbar(extension, window);
+-  is(
+-    window.gUnifiedExtensions.panel.state,
+-    "closed",
+-    "The panel was closed by the context menu action"
+-  );
+-
+-  is(
+-    CustomizableUI.getPlacementOfWidget(widgetId)?.area,
+-    CustomizableUI.AREA_ADDONS,
+-    `widget moved to the addons area`
+-  );
+-
+-  // disable vertical tabs, confirm the widget doesnt get restored to the toolbar
+-  toolbarChanged = BrowserTestUtils.waitForEvent(
+-    window,
+-    "toolbarvisibilitychange"
+-  );
+-  // toggle the sidebar.verticalTabs pref to off
+-  await SpecialPowers.popPrefEnv();
+-  await toolbarChanged;
+-
+-  ok(
+-    !tabstripCUITarget.querySelector(".webextension-browser-action"),
+-    "There are no extension widgets in the tabstrip"
+-  );
+-
+-  let widget = getBrowserActionWidget(extension);
+-  is(
+-    CustomizableUI.getPlacementOfWidget(widget.id)?.area,
+-    CustomizableUI.AREA_ADDONS,
+-    `widget remained in correct area`
+-  );
+-
+-  await extension.unload();
+-  await CustomizableUI.reset();
+-});
+diff --git a/browser/components/sidebar/tests/browser/browser_customize_sidebar.js b/browser/components/sidebar/tests/browser/browser_customize_sidebar.js
+index c63ffa907a34..473b55f2b29e 100644
+--- a/browser/components/sidebar/tests/browser/browser_customize_sidebar.js
++++ b/browser/components/sidebar/tests/browser/browser_customize_sidebar.js
+@@ -133,7 +133,6 @@ add_task(async function test_manage_preferences_navigation() {
+     customizeDocument.querySelector("sidebar-customize");
+   let manageSettings =
+     customizeComponent.shadowRoot.getElementById("manage-settings");
+-  manageSettings.querySelector("a").scrollIntoView();
+ 
+   EventUtils.synthesizeMouseAtCenter(
+     manageSettings.querySelector("a"),
+diff --git a/browser/components/sidebar/tests/browser/browser_verticalTabs_widget_placements.js b/browser/components/sidebar/tests/browser/browser_verticalTabs_widget_placements.js
+index 887ec06ac1cb..9903d25418ff 100644
+--- a/browser/components/sidebar/tests/browser/browser_verticalTabs_widget_placements.js
++++ b/browser/components/sidebar/tests/browser/browser_verticalTabs_widget_placements.js
+@@ -47,8 +47,8 @@ add_task(async function moveAndRestoreTabsToolbarWidgets() {
+     "CustomizableUI verticalTabsEnabled getter reflects pref value"
+   );
+   Assert.ok(
+-    BrowserTestUtils.isHidden(document.getElementById("TabsToolbar")),
+-    "#TabsToolbar is now hidden"
++    BrowserTestUtils.isVisible(document.getElementById("TabsToolbar")),
++    "#TabsToolbar is still visible"
+   );
+ 
+   // The tabs-widget should be in the vertical tabs area
+diff --git a/browser/components/sidebar/tests/browser/browser_vertical_tabs.js b/browser/components/sidebar/tests/browser/browser_vertical_tabs.js
+index 51782ac028e8..3f587e93157b 100644
+--- a/browser/components/sidebar/tests/browser/browser_vertical_tabs.js
++++ b/browser/components/sidebar/tests/browser/browser_vertical_tabs.js
+@@ -34,35 +34,6 @@ function checkTelemetryScalar(name, value) {
+   }, `Scalar ${name} has value: ${value}`);
+ }
+ 
+-function getExpectedElements(win, tabstripOrientation = "horizontal") {
+-  const sizeMode = win.document.documentElement.getAttribute("sizemode");
+-  let selectors;
+-
+-  // NOTE: TabsInTitlebar behaviour isn't under test here. We just want to assert on
+-  // the right stuff being visible whatever the case for the given window.
+-
+-  if (tabstripOrientation == "horizontal") {
+-    selectors = ["#TabsToolbar"];
+-
+-    if (win.TabsInTitlebar.enabled) {
+-      selectors.push("#TabsToolbar .titlebar-buttonbox-container");
+-      if (sizeMode == "normal") {
+-        selectors.push("#TabsToolbar .titlebar-spacer");
+-      }
+-    }
+-    return selectors;
+-  }
+-
+-  selectors = ["#vertical-tabs"];
+-  if (win.TabsInTitlebar.enabled) {
+-    selectors.push("#nav-bar .titlebar-buttonbox-container");
+-    if (sizeMode == "normal") {
+-      selectors.push("#nav-bar .titlebar-spacer");
+-    }
+-  }
+-  return selectors;
+-}
+-
+ add_task(async function test_toggle_vertical_tabs() {
+   const sidebar = document.querySelector("sidebar-main");
+   ok(sidebar, "Sidebar is shown.");
+@@ -72,39 +43,11 @@ add_task(async function test_toggle_vertical_tabs() {
+     "TabsToolbar-customization-target"
+   );
+   let verticalTabs = document.querySelector("#vertical-tabs");
+-  info(
+-    `toolbars collapsed: \n${Array.from(
+-      document.querySelectorAll("#navigator-toolbox > toolbar")
+-    )
+-      .map(t => `  ${t.id}: ${t.collapsed}`)
+-      .join("\n")}`
+-  );
+-  info(`sizemode: ${document.documentElement.getAttribute("sizemode")}`);
+-  info(
+-    `tabsintitlebar: ${document.documentElement.getAttribute("tabsintitlebar")}`
++  ok(
++    !BrowserTestUtils.isVisible(verticalTabs),
++    "Vertical tabs slot is not visible"
+   );
+ 
+-  const expectedElementsWhenHorizontal = getExpectedElements(
+-    window,
+-    "horizontal"
+-  );
+-  const expectedElementsWhenVertical = getExpectedElements(window, "vertical");
+-
+-  for (let selector of expectedElementsWhenHorizontal) {
+-    let elem = document.querySelector(selector);
+-    ok(
+-      elem && BrowserTestUtils.isVisible(elem),
+-      `${selector} exists and is visible`
+-    );
+-  }
+-  for (let selector of expectedElementsWhenVertical) {
+-    let elem = document.querySelector(selector);
+-    ok(
+-      elem && BrowserTestUtils.isHidden(elem),
+-      `${selector} exists and is hidden`
+-    );
+-  }
+-
+   is(
+     tabStrip.parentNode,
+     defaultTabstripParent,
+@@ -118,26 +61,7 @@ add_task(async function test_toggle_vertical_tabs() {
+ 
+   // flip the pref to move the tabstrip into the sidebar
+   await SpecialPowers.pushPrefEnv({ set: [["sidebar.verticalTabs", true]] });
+-
+-  for (let selector of expectedElementsWhenVertical) {
+-    let elem = document.querySelector(selector);
+-    ok(
+-      elem && BrowserTestUtils.isVisible(elem),
+-      `${selector} exists and is visible: ${!!elem}, ${
+-        elem && BrowserTestUtils.isVisible(elem)
+-      }`
+-    );
+-  }
+-  for (let selector of expectedElementsWhenHorizontal) {
+-    let elem = document.querySelector(selector);
+-    ok(
+-      elem && BrowserTestUtils.isHidden(elem),
+-      `${selector} exists and is hidden: ${!!elem}, ${
+-        elem && BrowserTestUtils.isHidden(elem)
+-      }`
+-    );
+-  }
+-
++  ok(BrowserTestUtils.isVisible(verticalTabs), "Vertical tabs slot is visible");
+   is(
+     tabStrip.parentNode,
+     verticalTabs,
+@@ -206,7 +130,7 @@ add_task(async function test_toggle_vertical_tabs() {
+ 
+   Assert.greater(
+     containerRect.bottom - tabRect.bottom,
+-    450,
++    500,
+     "Container should extend far beyond the last tab."
+   );
+ 
+diff --git a/browser/components/sidebar/tests/marionette/test_initialize_vertical_tabs.py b/browser/components/sidebar/tests/marionette/test_initialize_vertical_tabs.py
+index 0a3ae6d40d62..d1f4bb40565f 100644
+--- a/browser/components/sidebar/tests/marionette/test_initialize_vertical_tabs.py
++++ b/browser/components/sidebar/tests/marionette/test_initialize_vertical_tabs.py
+@@ -4,7 +4,6 @@
+ 
+ import json
+ 
+-from marionette_driver.by import By
+ from marionette_harness import MarionetteTestCase
+ 
+ vertical_parent_id = "vertical-tabs"
+@@ -41,61 +40,6 @@ class TestInitializeVerticalTabs(MarionetteTestCase):
+             f"return CustomizableUI.getWidgetIdsInArea(CustomizableUI.{area})"
+         )
+ 
+-    def check_tabs_toolbar_visibilities(self, orientation="vertical"):
+-        self.marionette.set_context("chrome")
+-        h_tabstoolbar = self.marionette.find_element(By.ID, "TabsToolbar")
+-        v_tabstoolbar = self.marionette.find_element(By.ID, "vertical-tabs")
+-
+-        h_collapsed = self.marionette.execute_script(
+-            "return document.getElementById(CustomizableUI.AREA_TABSTRIP).getAttribute('collapsed')"
+-        )
+-        v_collapsed = self.marionette.execute_script(
+-            "return document.getElementById(CustomizableUI.AREA_VERTICAL_TABSTRIP).getAttribute('collapsed')"
+-        )
+-
+-        if orientation == "vertical":
+-            self.assertEqual(
+-                h_collapsed,
+-                "true",
+-                "Horizontal tab strip has expected collapsed attribute value",
+-            )
+-            self.assertEqual(
+-                v_collapsed,
+-                "false",
+-                "Vertical tab strip has expected collapsed attribute value",
+-            )
+-
+-            self.assertFalse(
+-                h_tabstoolbar.is_displayed(), "Horizontal tab strip is not displayed"
+-            )
+-
+-            self.assertTrue(
+-                v_tabstoolbar.is_displayed(), "Vertical tab strip is displayed"
+-            )
+-            self.assertTrue(
+-                v_tabstoolbar.rect["width"] > 0, "Vertical tab strip has > 0 width"
+-            )
+-        else:
+-            self.assertEqual(
+-                v_collapsed,
+-                "true",
+-                "Vertical tab strip has expected collapsed attribute value",
+-            )
+-
+-            self.assertTrue(
+-                h_tabstoolbar.is_displayed(), "Horizontal tab strip is displayed"
+-            )
+-            self.assertTrue(
+-                h_tabstoolbar.rect["height"] > 0, "Horizontal tab strip has > 0 height"
+-            )
+-
+-            self.assertFalse(
+-                v_tabstoolbar.is_displayed(), "Vertical tab strip is not displayed"
+-            )
+-            self.assertEqual(
+-                v_tabstoolbar.rect["width"], 0, "Vertical tab strip has 0 width"
+-            )
+-
+     def test_vertical_widgets_in_area(self):
+         # A clean startup in verticalTabs mode; we should get all the defaults
+         self.restart_with_prefs(
+@@ -120,8 +64,6 @@ class TestInitializeVerticalTabs(MarionetteTestCase):
+             msg="The vertical tabstrip area has a single widget in it",
+         )
+ 
+-        self.check_tabs_toolbar_visibilities("vertical")
+-
+         # Check we're able to recover if we initialize with vertical tabs enabled
+         # and no saved pref for the horizontal tab strip placements
+         self.marionette.set_pref("sidebar.verticalTabs", False)
+@@ -129,8 +71,6 @@ class TestInitializeVerticalTabs(MarionetteTestCase):
+         horiz_tab_ids = self.get_area_widgets("AREA_TABSTRIP")
+         vertical_tab_ids = self.get_area_widgets("AREA_VERTICAL_TABSTRIP")
+ 
+-        self.check_tabs_toolbar_visibilities("horizontal")
+-
+         # Make sure we ended up with sensible defaults
+         self.assertEqual(
+             horiz_tab_ids,
+@@ -187,8 +127,6 @@ class TestInitializeVerticalTabs(MarionetteTestCase):
+ 
+         saved_state = json.loads(self.marionette.get_pref(customization_pref))
+ 
+-        self.check_tabs_toolbar_visibilities("vertical")
+-
+         horiz_tab_ids = self.get_area_widgets("AREA_TABSTRIP")
+         nav_bar_ids = self.get_area_widgets("AREA_NAVBAR")
+ 
+@@ -207,8 +145,6 @@ class TestInitializeVerticalTabs(MarionetteTestCase):
+         fixture_prefs["sidebar.verticalTabs"] = False
+         self.restart_with_prefs(fixture_prefs)
+ 
+-        self.check_tabs_toolbar_visibilities("horizontal")
+-
+         horiz_tab_ids = self.get_area_widgets("AREA_TABSTRIP")
+ 
+         self.assertEqual(
+diff --git a/browser/components/tabbrowser/content/tabbrowser.js b/browser/components/tabbrowser/content/tabbrowser.js
+index 859ca1f4f792..c60646d4cb11 100644
+--- a/browser/components/tabbrowser/content/tabbrowser.js
++++ b/browser/components/tabbrowser/content/tabbrowser.js
+@@ -7774,59 +7774,32 @@ var StatusPanel = {
+ var TabBarVisibility = {
+   _initialUpdateDone: false,
+ 
+-  update(force = false) {
++  update() {
+     let toolbar = document.getElementById("TabsToolbar");
+-    let hideTabstrip = false;
+-    let isPopup = !window.toolbar.visible;
+-    let isVerticalTabs = Services.prefs.getBoolPref(
+-      "sidebar.verticalTabs",
+-      false
+-    );
+-    let nonPopupWithVerticalTabs = !isPopup && isVerticalTabs;
++    let collapse = false;
+     if (
+       !gBrowser /* gBrowser isn't initialized yet */ ||
+       gBrowser.visibleTabs.length == 1
+     ) {
+-      hideTabstrip = isPopup;
+-    }
+-
+-    if (nonPopupWithVerticalTabs) {
+-      // TabsInTitlebar decides if we can draw within the titlebar area.
+-      // In vertical tabs mode, the toolbar with the horizontal tabstrip gets hidden
+-      // and the navbar becomes a titlebar. This makie TabsInTitlebar a bit of a misnomer.
+-      // We'll fix this in Bug 1921034.
+-      hideTabstrip = true;
+-      TabsInTitlebar.allowedBy("tabs-visible", true);
+-    } else {
+-      TabsInTitlebar.allowedBy("tabs-visible", !hideTabstrip);
++      collapse = !window.toolbar.visible;
+     }
+ 
+-    if (
+-      hideTabstrip == toolbar.collapsed &&
+-      !force &&
+-      this._initialUpdateDone
+-    ) {
++    if (collapse == toolbar.collapsed && this._initialUpdateDone) {
+       return;
+     }
+     this._initialUpdateDone = true;
+ 
+-    toolbar.collapsed = hideTabstrip;
++    toolbar.collapsed = collapse;
+     let navbar = document.getElementById("nav-bar");
+-    navbar.toggleAttribute("tabs-hidden", hideTabstrip);
+-    // Should the nav-bar look and function  like a titlebar?
+-    navbar.classList.toggle(
+-      "browser-titlebar",
+-      TabsInTitlebar.enabled && hideTabstrip
+-    );
+-    navbar.classList.toggle("titlebar-color", hideTabstrip);
++    navbar.toggleAttribute("tabs-hidden", collapse);
+ 
+-    document.getElementById("menu_closeWindow").hidden = hideTabstrip;
++    document.getElementById("menu_closeWindow").hidden = collapse;
+     document.l10n.setAttributes(
+       document.getElementById("menu_close"),
+-      hideTabstrip
+-        ? "tabbrowser-menuitem-close"
+-        : "tabbrowser-menuitem-close-tab"
++      collapse ? "tabbrowser-menuitem-close" : "tabbrowser-menuitem-close-tab"
+     );
++
++    TabsInTitlebar.allowedBy("tabs-visible", !collapse);
+   },
+ };
+ 
+diff --git a/browser/themes/linux/browser.css b/browser/themes/linux/browser.css
+index f44f2fd9f0c9..b9628a528998 100644
+--- a/browser/themes/linux/browser.css
++++ b/browser/themes/linux/browser.css
+@@ -143,8 +143,10 @@
+   min-height: 0;
+ }
+ 
+-.browser-titlebar,
+-#main-menubar {
++#TabsToolbar,
++#toolbar-menubar,
++#main-menubar,
++#titlebar {
+   appearance: none;
+   background-color: transparent;
+   color: inherit;
+diff --git a/browser/themes/osx/browser.css b/browser/themes/osx/browser.css
+index 57f5c39e9a44..11274f4e2004 100644
+--- a/browser/themes/osx/browser.css
++++ b/browser/themes/osx/browser.css
+@@ -49,7 +49,7 @@
+ 
+ /** Begin titlebar **/
+ 
+-.browser-titlebar {
++#titlebar {
+   /* Centrally align content items vertically */
+   justify-content: center;
+ }
+diff --git a/browser/themes/shared/browser-shared.css b/browser/themes/shared/browser-shared.css
+index 9d23b16ebe02..1978d144f138 100644
+--- a/browser/themes/shared/browser-shared.css
++++ b/browser/themes/shared/browser-shared.css
+@@ -117,14 +117,6 @@ body {
+ 
+ #navigator-toolbox {
+   appearance: none;
+-  position: relative;
+-
+-  /*
+-   Should paint on top of our sibling #browser (even when preceding it in the DOM)
+-   TODO(sfoster): we need a broader re-think of stacking and paint order.
+-   See bug 1921257 and bug 1921811.
+-   */
+-  z-index: var(--browser-area-z-index-toolbox);
+ 
+   background-color: var(--toolbox-non-lwt-bgcolor);
+   color: var(--toolbox-non-lwt-textcolor);
+@@ -177,7 +171,7 @@ body {
+ 
+ /* Title bar */
+ 
+-.browser-titlebar {
++#titlebar {
+   -moz-window-dragging: drag;
+ 
+   :root[tabsintitlebar] & {
+@@ -205,7 +199,7 @@ body {
+     }
+   }
+ 
+-  #toolbar-menubar[autohide="true"]:not([inactive]) ~ :is(#TabsToolbar, #nav-bar) > & {
++  #toolbar-menubar[autohide="true"]:not([inactive]) + #TabsToolbar > & {
+     visibility: hidden;
+   }
+ 
+@@ -241,15 +235,10 @@ body {
+   }
+ }
+ 
+-/* Hide the TabsToolbar/nav-bar titlebar controls if the menubar is permanently shown.
++/* Hide the TabsToolbar titlebar controls if the menubar is permanently shown.
+  * (That is, if the menu bar doesn't autohide, and we're not in a fullscreen or
+  * popup window.) */
+-:root:not([chromehidden~="menubar"], [inFullscreen]) #toolbar-menubar[autohide="false"] ~ :is(#TabsToolbar, #nav-bar) > :is(.titlebar-buttonbox-container, .titlebar-spacer) {
+-  display: none;
+-}
+-
+-/* Only show the titlebar buttons and spacers in the first visible toolbar */
+-#nav-bar:not([tabs-hidden]) > :is(.titlebar-buttonbox-container, .titlebar-spacer) {
++:root:not([chromehidden~="menubar"], [inFullscreen]) #toolbar-menubar[autohide="false"] + #TabsToolbar > :is(.titlebar-buttonbox-container, .titlebar-spacer) {
+   display: none;
+ }
+ 
+diff --git a/devtools/client/aboutdebugging/test/browser/browser_aboutdebugging_devtoolstoolbox_tooltip_markupview.js b/devtools/client/aboutdebugging/test/browser/browser_aboutdebugging_devtoolstoolbox_tooltip_markupview.js
+index a0561127aae6..047b309740af 100644
+--- a/devtools/client/aboutdebugging/test/browser/browser_aboutdebugging_devtoolstoolbox_tooltip_markupview.js
++++ b/devtools/client/aboutdebugging/test/browser/browser_aboutdebugging_devtoolstoolbox_tooltip_markupview.js
+@@ -58,7 +58,7 @@ add_task(async function () {
+   await checkTooltipVisibility(
+     inspector,
+     eventBadge,
+-    rootDocument.querySelector("#TabsToolbar")
++    rootDocument.querySelector("#titlebar")
+   );
+ 
+   await closeAboutDevtoolsToolbox(document, devtoolsTab, window);

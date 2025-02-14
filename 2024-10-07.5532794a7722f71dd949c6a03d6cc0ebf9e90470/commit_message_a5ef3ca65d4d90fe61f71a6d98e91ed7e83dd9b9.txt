@@ -1,0 +1,1 @@
+Bug 1899598 - Hide the horizontal tab strip when vertical tabs are enabled. r=mconley,desktop-theme-reviewers,tabbrowser-reviewers,sidebar-reviewers,emilio,willdurand,sclements    2024-10-03 06:14:13    a5ef3ca65d4d90fe61f71a6d98e91ed7e83dd9b9
