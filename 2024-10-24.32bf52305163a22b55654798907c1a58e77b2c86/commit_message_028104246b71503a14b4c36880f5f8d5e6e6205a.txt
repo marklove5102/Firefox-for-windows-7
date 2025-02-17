@@ -1,0 +1,1 @@
+Bug 1924240 - Devirtualize parent handling. r=mac-reviewers,win-reviewers,geckoview-reviewers,bradwerth,m_kato,rkraesig    2024-10-23 04:25:18    028104246b71503a14b4c36880f5f8d5e6e6205a
