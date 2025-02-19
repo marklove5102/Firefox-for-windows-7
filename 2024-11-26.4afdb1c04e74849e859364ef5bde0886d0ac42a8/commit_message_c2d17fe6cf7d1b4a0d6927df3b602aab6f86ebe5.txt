@@ -1,0 +1,1 @@
+Bug 1878623 - Clean up some windows popup code. r=win-reviewers,rkraesig    2024-02-13 03:45:49    c2d17fe6cf7d1b4a0d6927df3b602aab6f86ebe5
