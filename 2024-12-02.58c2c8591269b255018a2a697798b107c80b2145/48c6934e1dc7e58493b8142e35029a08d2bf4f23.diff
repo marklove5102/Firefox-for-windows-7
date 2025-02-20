@@ -1,0 +1,814 @@
+diff --git a/dom/geolocation/Geolocation.cpp b/dom/geolocation/Geolocation.cpp
+index f4a9c007d7f7..a1300eab1a40 100644
+--- a/dom/geolocation/Geolocation.cpp
++++ b/dom/geolocation/Geolocation.cpp
+@@ -343,8 +343,8 @@ void Geolocation::ReallowWithSystemPermissionOrCancel(
+   denyPermissionOnError.release();
+ 
+   RefPtr<SystemGeolocationPermissionRequest> permissionRequest =
+-      geolocation::RequestLocationPermissionFromUser(aBrowsingContext,
+-                                                     std::move(aResolver));
++      geolocation::PresentSystemSettings(aBrowsingContext,
++                                         std::move(aResolver));
+   NS_ENSURE_TRUE_VOID(permissionRequest);
+ 
+   auto cancelRequestOnError = MakeScopeExit([&]() {
+@@ -383,13 +383,12 @@ nsGeolocationRequest::Allow(JS::Handle<JS::Value> aChoices) {
+     return NS_OK;
+   }
+ 
+-  if (mBehavior != SystemGeolocationPermissionBehavior::NoPrompt) {
+-    // Asynchronously present the system dialog or open system preferences
+-    // (RequestGeolocationPermissionFromUser will know which to do), and wait
+-    // for the permission to change or the request to be canceled.  If the
+-    // permission is (maybe) granted then it will call Allow again.  It actually
+-    // will also re-call Allow if the permission is denied, in order to get the
+-    // "denied permission" behavior.
++  if (mBehavior == SystemGeolocationPermissionBehavior::GeckoWillPromptUser) {
++    // Asynchronously present the system dialog and wait for the permission to
++    // change or the request to be canceled.  If the permission is (maybe)
++    // granted then it will call Allow again.  It actually will also re-call
++    // Allow if the permission is denied, in order to get the "denied
++    // permission" behavior.
+     mBehavior = SystemGeolocationPermissionBehavior::NoPrompt;
+     RefPtr<BrowsingContext> browsingContext = mWindow->GetBrowsingContext();
+     if (ContentChild* cc = ContentChild::GetSingleton()) {
+@@ -1433,14 +1432,7 @@ void Geolocation::NotifyAllowedRequest(nsGeolocationRequest* aRequest) {
+ 
+ /* static */ geolocation::SystemGeolocationPermissionBehavior
+ Geolocation::GetLocationOSPermission() {
+-  auto permission = geolocation::GetGeolocationPermissionBehavior();
+-
+-  if (!StaticPrefs::geo_prompt_open_system_prefs() &&
+-      permission == geolocation::SystemGeolocationPermissionBehavior::
+-                        GeckoWillPromptUser) {
+-    return geolocation::SystemGeolocationPermissionBehavior::NoPrompt;
+-  }
+-  return permission;
++  return geolocation::GetGeolocationPermissionBehavior();
+ }
+ 
+ void Geolocation::RequestIfPermitted(nsGeolocationRequest* request) {
+diff --git a/dom/geolocation/GeolocationSystem.cpp b/dom/geolocation/GeolocationSystem.cpp
+index 9ef44019bce5..be9f20d685f9 100644
+--- a/dom/geolocation/GeolocationSystem.cpp
++++ b/dom/geolocation/GeolocationSystem.cpp
+@@ -12,9 +12,8 @@ SystemGeolocationPermissionBehavior GetGeolocationPermissionBehavior() {
+   return SystemGeolocationPermissionBehavior::NoPrompt;
+ }
+ 
+-already_AddRefed<SystemGeolocationPermissionRequest>
+-RequestLocationPermissionFromUser(BrowsingContext* aBrowsingContext,
+-                                  ParentRequestResolver&& aResolver) {
++already_AddRefed<SystemGeolocationPermissionRequest> PresentSystemSettings(
++    BrowsingContext* aBrowsingContext, ParentRequestResolver&& aResolver) {
+   MOZ_ASSERT_UNREACHABLE(
+       "Should not warn user of need for system location permission "
+       "since we cannot open system settings on this platform.");
+diff --git a/dom/geolocation/GeolocationSystem.h b/dom/geolocation/GeolocationSystem.h
+index b093f34601c2..36c26a00124f 100644
+--- a/dom/geolocation/GeolocationSystem.h
++++ b/dom/geolocation/GeolocationSystem.h
+@@ -41,13 +41,12 @@ using ParentRequestResolver =
+     PContentParent::RequestGeolocationPermissionFromUserResolver;
+ 
+ /**
+- * Opens the relevant system dialog to request permission from the user.
+- * Resolves aResolver when permission is granted, an error occurs, or Stop has
+- * been called on the SystemGeolocationPermissionRequest.
++ * Opens the relevant (system or Gecko) window to request permission from the
++ * user. Resolves aResolver when permission is granted, an error occurs, or Stop
++ * has been called on the SystemGeolocationPermissionRequest.
+  */
+-already_AddRefed<SystemGeolocationPermissionRequest>
+-RequestLocationPermissionFromUser(BrowsingContext* aBrowsingContext,
+-                                  ParentRequestResolver&& aResolver);
++already_AddRefed<SystemGeolocationPermissionRequest> PresentSystemSettings(
++    BrowsingContext* aBrowsingContext, ParentRequestResolver&& aResolver);
+ 
+ }  // namespace geolocation
+ }  // namespace mozilla::dom
+diff --git a/dom/geolocation/GeolocationSystemWin.cpp b/dom/geolocation/GeolocationSystemWin.cpp
+deleted file mode 100644
+index 2fa125075bd1..000000000000
+--- a/dom/geolocation/GeolocationSystemWin.cpp
++++ /dev/null
+@@ -1,351 +0,0 @@
+-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
+-/* This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this
+- * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+-
+-#include "GeolocationSystem.h"
+-#include "mozilla/Components.h"
+-#include "mozilla/dom/BrowsingContext.h"
+-#include "mozilla/ScopeExit.h"
+-#include "nsIGeolocationUIUtilsWin.h"
+-#include "nsIWifiListener.h"
+-#include "nsIWifiMonitor.h"
+-
+-#include <windows.system.h>
+-#include <windows.security.authorization.appcapabilityaccess.h>
+-#include <wrl.h>
+-
+-namespace mozilla::dom::geolocation {
+-
+-using namespace ABI::Windows::Foundation;
+-using namespace ABI::Windows::Security::Authorization::AppCapabilityAccess;
+-using namespace ABI::Windows::System;
+-using namespace Microsoft::WRL;
+-using Wrappers::HStringReference;
+-
+-namespace {
+-
+-const auto& kAppCapabilityGuid =
+-    RuntimeClass_Windows_Security_Authorization_AppCapabilityAccess_AppCapability;
+-const auto& kLauncherGuid = RuntimeClass_Windows_System_Launcher;
+-const auto& kUriGuid = RuntimeClass_Windows_Foundation_Uri;
+-const wchar_t kLocationSettingsPage[] = L"ms-settings:privacy-location";
+-
+-template <typename TypeToCreate>
+-ComPtr<TypeToCreate> CreateFromActivationFactory(const wchar_t* aNamespace) {
+-  ComPtr<TypeToCreate> newObject;
+-  GetActivationFactory(HStringReference(aNamespace).Get(), &newObject);
+-  return newObject;
+-}
+-
+-RefPtr<IAppCapability> GetWifiControlAppCapability() {
+-  ComPtr<IAppCapabilityStatics> appCapabilityStatics =
+-      CreateFromActivationFactory<IAppCapabilityStatics>(kAppCapabilityGuid);
+-  NS_ENSURE_TRUE(appCapabilityStatics, nullptr);
+-
+-  RefPtr<IAppCapability> appCapability;
+-  HRESULT hr = appCapabilityStatics->Create(
+-      HStringReference(L"wifiControl").Get(), getter_AddRefs(appCapability));
+-  NS_ENSURE_TRUE(SUCCEEDED(hr), nullptr);
+-  NS_ENSURE_TRUE(appCapability, nullptr);
+-  return appCapability;
+-}
+-
+-Maybe<AppCapabilityAccessStatus> GetWifiControlAccess() {
+-  auto appCapability = GetWifiControlAppCapability();
+-  NS_ENSURE_TRUE(appCapability, Nothing());
+-  AppCapabilityAccessStatus status;
+-  HRESULT hr = appCapability->CheckAccess(&status);
+-  NS_ENSURE_TRUE(SUCCEEDED(hr), Nothing());
+-  return Some(status);
+-}
+-
+-bool SystemWillPromptForPermissionHint() {
+-  auto wifiAccess = GetWifiControlAccess();
+-  if (wifiAccess !=
+-      mozilla::Some(AppCapabilityAccessStatus::
+-                        AppCapabilityAccessStatus_UserPromptRequired)) {
+-    return false;
+-  }
+-
+-  // If wifi is not available (e.g. because there is no wifi device present)
+-  // then the API may report that Windows will request geolocation permission
+-  // but it can't without the wifi scanner.  Check for that case.
+-  nsCOMPtr<nsIWifiMonitor> wifiMonitor = components::WifiMonitor::Service();
+-  NS_ENSURE_TRUE(wifiMonitor, false);
+-  return wifiMonitor->GetHasWifiAdapter();
+-}
+-
+-bool LocationIsPermittedHint() {
+-  auto wifiAccess = GetWifiControlAccess();
+-  // This API wasn't available on earlier versions of Windows, so a failure to
+-  // get the result means that we will assume that location access is permitted.
+-  return wifiAccess.isNothing() ||
+-         *wifiAccess ==
+-             AppCapabilityAccessStatus::AppCapabilityAccessStatus_Allowed;
+-}
+-
+-class WindowsGeolocationPermissionRequest final
+-    : public SystemGeolocationPermissionRequest,
+-      public SupportsThreadSafeWeakPtr<WindowsGeolocationPermissionRequest> {
+- public:
+-  MOZ_DECLARE_REFCOUNTED_TYPENAME(WindowsGeolocationPermissionRequest);
+-  // Define SystemGeolocationPermissionRequest's ref-counting by forwarding the
+-  // calls to SupportsThreadSafeWeakPtr<WindowsGeolocationPermissionRequest>
+-  NS_INLINE_DECL_REFCOUNTING_INHERITED(
+-      WindowsGeolocationPermissionRequest,
+-      SupportsThreadSafeWeakPtr<WindowsGeolocationPermissionRequest>);
+-
+-  WindowsGeolocationPermissionRequest(BrowsingContext* aBrowsingContext,
+-                                      ParentRequestResolver&& aResolver)
+-      : mResolver(std::move(aResolver)), mBrowsingContext(aBrowsingContext) {}
+-
+-  void Initialize() {
+-    MOZ_ASSERT(!mIsRunning);
+-    auto failedToWatch = MakeScopeExit([&]() {
+-      if (!mIsRunning) {
+-        mAppCapability = nullptr;
+-        mToken = EventRegistrationToken{};
+-        mResolver(GeolocationPermissionStatus::Error);
+-      }
+-    });
+-
+-    mAppCapability = GetWifiControlAppCapability();
+-    if (!mAppCapability) {
+-      return;
+-    }
+-
+-    using AccessChangedHandler =
+-        ITypedEventHandler<AppCapability*,
+-                           AppCapabilityAccessChangedEventArgs*>;
+-
+-    // Note: This creates the callback that listens for location permission
+-    // changes as free threaded, which we need to do to overcome a (Microsoft)
+-    // issue with the callback proxy's exports with (at least) the pre-24H2
+-    // versions of Windows.
+-    ComPtr<AccessChangedHandler> acHandlerRef = Callback<Implements<
+-        RuntimeClassFlags<ClassicCom>, AccessChangedHandler, FtmBase>>(
+-        [weakSelf = ThreadSafeWeakPtr<WindowsGeolocationPermissionRequest>(
+-             this)](IAppCapability*, IAppCapabilityAccessChangedEventArgs*) {
+-          // Because of the free threaded access mentioned above, our
+-          // callback can run on a background thread, so dispatch it to
+-          // main.
+-          if (!NS_IsMainThread()) {
+-            NS_DispatchToMainThread(
+-                NS_NewRunnableFunction(__func__, [weakSelf]() {
+-                  RefPtr<WindowsGeolocationPermissionRequest> self(weakSelf);
+-                  if (self) {
+-                    self->StopIfLocationIsPermitted();
+-                  }
+-                }));
+-            return S_OK;
+-          }
+-
+-          RefPtr<WindowsGeolocationPermissionRequest> self(weakSelf);
+-          if (self) {
+-            self->StopIfLocationIsPermitted();
+-          }
+-          return S_OK;
+-        });
+-
+-    if (!acHandlerRef) {
+-      return;
+-    }
+-
+-    HRESULT hr = mAppCapability->add_AccessChanged(acHandlerRef.Get(), &mToken);
+-    NS_ENSURE_TRUE_VOID(SUCCEEDED(hr));
+-    MOZ_ASSERT(mToken.value);
+-
+-    mIsRunning = true;
+-    failedToWatch.release();
+-
+-    // Avoid a race for accessChanged by checking it now and stopping if
+-    // permission is already granted.
+-    StopIfLocationIsPermitted();
+-  }
+-
+-  void Stop() override {
+-    MOZ_ASSERT(NS_IsMainThread());
+-    if (!mIsRunning) {
+-      return;
+-    }
+-    mIsRunning = false;
+-
+-    if (LocationIsPermittedHint()) {
+-      mResolver(GeolocationPermissionStatus::Granted);
+-    } else {
+-      mResolver(GeolocationPermissionStatus::Canceled);
+-    }
+-
+-    // Remove the modal with the cancel button.
+-    nsresult rv = DismissPrompt();
+-    NS_ENSURE_SUCCESS_VOID(rv);
+-
+-    // Stop watching location settings.
+-    MOZ_ASSERT(mAppCapability);
+-    mAppCapability->remove_AccessChanged(mToken);
+-    mAppCapability = nullptr;
+-    mToken = EventRegistrationToken{};
+-  }
+-
+-  bool IsStopped() { return !mIsRunning; }
+-
+- protected:
+-  // Ref-counting demands that the destructor be non-public but
+-  // SupportsThreadSafeWeakPtr needs to be able to call it, because we use
+-  // NS_INLINE_DECL_REFCOUNTING_INHERITED.
+-  friend SupportsThreadSafeWeakPtr<WindowsGeolocationPermissionRequest>;
+-
+-  virtual ~WindowsGeolocationPermissionRequest() {
+-    Stop();
+-    MOZ_ASSERT(mToken.value == 0);
+-  }
+-
+-  void StopIfLocationIsPermitted() {
+-    if (LocationIsPermittedHint()) {
+-      Stop();
+-    }
+-  }
+-
+-  nsresult DismissPrompt() {
+-    nsresult rv;
+-    nsCOMPtr<nsIGeolocationUIUtilsWin> utils =
+-        do_GetService("@mozilla.org/geolocation/ui-utils-win;1", &rv);
+-    NS_ENSURE_SUCCESS(rv, rv);
+-    return utils->DismissPrompts(mBrowsingContext);
+-  }
+-
+-  // This IAppCapability object must be held for the duration of the period
+-  // where we listen for location permission changes or else the callback
+-  // will not be called.
+-  RefPtr<IAppCapability> mAppCapability;
+-  ParentRequestResolver mResolver;
+-  RefPtr<BrowsingContext> mBrowsingContext;
+-  EventRegistrationToken mToken;
+-  bool mIsRunning = false;
+-};
+-
+-// Opens Windows geolocation settings and cancels the geolocation request on
+-// error.
+-void OpenWindowsLocationSettings(
+-    SystemGeolocationPermissionRequest* aPermissionRequest) {
+-  auto cancelRequest = MakeScopeExit([&]() { aPermissionRequest->Stop(); });
+-
+-  ComPtr<IUriRuntimeClassFactory> uriFactory =
+-      CreateFromActivationFactory<IUriRuntimeClassFactory>(kUriGuid);
+-  NS_ENSURE_TRUE_VOID(uriFactory);
+-
+-  RefPtr<IUriRuntimeClass> uri;
+-  HRESULT hr = uriFactory->CreateUri(
+-      HStringReference(kLocationSettingsPage).Get(), getter_AddRefs(uri));
+-  NS_ENSURE_TRUE_VOID(SUCCEEDED(hr));
+-
+-  ComPtr<ILauncherStatics> launcherStatics =
+-      CreateFromActivationFactory<ILauncherStatics>(kLauncherGuid);
+-  NS_ENSURE_TRUE_VOID(launcherStatics);
+-
+-  RefPtr<IAsyncOperation<bool>> handler;
+-  hr = launcherStatics->LaunchUriAsync(uri, getter_AddRefs(handler));
+-  NS_ENSURE_TRUE_VOID(SUCCEEDED(hr));
+-
+-  // The IAsyncOperation is similar to a promise so there is no race here,
+-  // despite us adding this callback after requesting launch instead of before.
+-  handler->put_Completed(
+-      Callback<IAsyncOperationCompletedHandler<bool>>(
+-          [permissionRequest = RefPtr{aPermissionRequest}](
+-              IAsyncOperation<bool>* asyncInfo, AsyncStatus status) {
+-            unsigned char verdict = 0;
+-            asyncInfo->GetResults(&verdict);
+-            if (!verdict) {
+-              permissionRequest->Stop();
+-            }
+-            return S_OK;
+-          })
+-          .Get());
+-
+-  cancelRequest.release();
+-}
+-
+-class LocationPermissionWifiScanListener final : public nsIWifiListener {
+- public:
+-  NS_DECL_ISUPPORTS
+-
+-  explicit LocationPermissionWifiScanListener(
+-      SystemGeolocationPermissionRequest* aRequest)
+-      : mRequest(aRequest) {}
+-
+-  NS_IMETHOD OnChange(const nsTArray<RefPtr<nsIWifiAccessPoint>>&) override {
+-    // We will remove ourselves from the nsIWifiMonitor, which is our owner.
+-    // Hold a strong reference to ourselves until we complete the callback.
+-    RefPtr<LocationPermissionWifiScanListener> self = this;
+-    return PermissionWasDecided();
+-  }
+-
+-  NS_IMETHOD OnError(nsresult) override {
+-    // We will remove ourselves from the nsIWifiMonitor, which is our owner.
+-    // Hold a strong reference to ourselves until we complete the callback.
+-    RefPtr<LocationPermissionWifiScanListener> self = this;
+-    return PermissionWasDecided();
+-  }
+-
+- private:
+-  virtual ~LocationPermissionWifiScanListener() = default;
+-  RefPtr<SystemGeolocationPermissionRequest> mRequest;
+-
+-  // Any response to our wifi scan request means that the user has selected
+-  // either to grant or deny permission in the Windows dialog.  Either way, we
+-  // are done asking for permission, so Stop the permission request.
+-  nsresult PermissionWasDecided() {
+-    nsCOMPtr<nsIWifiMonitor> wifiMonitor = components::WifiMonitor::Service();
+-    NS_ENSURE_TRUE(wifiMonitor, NS_ERROR_FAILURE);
+-    wifiMonitor->StopWatching(this);
+-    mRequest->Stop();
+-    return NS_OK;
+-  }
+-};
+-
+-NS_IMPL_ISUPPORTS(LocationPermissionWifiScanListener, nsIWifiListener)
+-
+-}  // namespace
+-
+-//-----------------------------------------------------------------------------
+-
+-SystemGeolocationPermissionBehavior GetGeolocationPermissionBehavior() {
+-  if (SystemWillPromptForPermissionHint()) {
+-    return SystemGeolocationPermissionBehavior::SystemWillPromptUser;
+-  }
+-  if (!LocationIsPermittedHint()) {
+-    return SystemGeolocationPermissionBehavior::GeckoWillPromptUser;
+-  }
+-  return SystemGeolocationPermissionBehavior::NoPrompt;
+-}
+-
+-already_AddRefed<SystemGeolocationPermissionRequest>
+-RequestLocationPermissionFromUser(BrowsingContext* aBrowsingContext,
+-                                  ParentRequestResolver&& aResolver) {
+-  RefPtr<WindowsGeolocationPermissionRequest> permissionRequest =
+-      new WindowsGeolocationPermissionRequest(aBrowsingContext,
+-                                              std::move(aResolver));
+-  permissionRequest->Initialize();
+-  if (permissionRequest->IsStopped()) {
+-    return nullptr;
+-  }
+-  if (SystemWillPromptForPermissionHint()) {
+-    // To tell the system to prompt for permission, run one wifi scan (no need
+-    // to poll). We won't use the result -- either the user will grant
+-    // geolocation permission, meaning we will not need wifi scanning, or the
+-    // user will deny permission, in which case no scan can be done.  We just
+-    // want the prompt.
+-    nsCOMPtr<nsIWifiMonitor> wifiMonitor = components::WifiMonitor::Service();
+-    NS_ENSURE_TRUE(wifiMonitor, nullptr);
+-    auto listener =
+-        MakeRefPtr<LocationPermissionWifiScanListener>(permissionRequest);
+-    wifiMonitor->StartWatching(listener, false);
+-  } else {
+-    OpenWindowsLocationSettings(permissionRequest);
+-  }
+-  return permissionRequest.forget();
+-}
+-
+-}  // namespace mozilla::dom::geolocation
+diff --git a/dom/geolocation/moz.build b/dom/geolocation/moz.build
+index ef3cef6d049d..49f1b745bf20 100644
+--- a/dom/geolocation/moz.build
++++ b/dom/geolocation/moz.build
+@@ -7,9 +7,6 @@
+ with Files("**"):
+     BUG_COMPONENT = ("Core", "DOM: Geolocation")
+ 
+-with Files("GeolocationSystemWin.cpp"):
+-    BUG_COMPONENT = ("Core", "Widget: Win32")
+-
+ EXPORTS += [
+     "nsGeoPositionIPCSerialiser.h",
+ ]
+@@ -31,19 +28,11 @@ SOURCES += [
+ ]
+ 
+ UNIFIED_SOURCES += [
++    "GeolocationSystem.cpp",
+     "MLSFallback.cpp",
+ ]
+ 
+-# MinGW is missing the headers needed to build the Windows Geolocation System
+-# Permission UI so it uses the platform-agnostic version.
+-if (
+-    CONFIG["OS_TARGET"] == "WINNT"
+-    and (CONFIG["CC_TYPE"] == "clang-cl" or CONFIG["MOZ_ARTIFACT_BUILDS"])
+-    and CONFIG["MOZ_BUILD_APP"] == "browser"
+-):
+-    UNIFIED_SOURCES += [
+-        "GeolocationSystemWin.cpp",
+-    ]
++if CONFIG["OS_TARGET"] == "WINNT" and CONFIG["MOZ_BUILD_APP"] == "browser":
+     EXTRA_JS_MODULES += [
+         "GeolocationUIUtilsWin.sys.mjs",
+     ]
+@@ -52,10 +41,6 @@ if (
+     ]
+     XPIDL_SOURCES += ["nsIGeolocationUIUtilsWin.idl"]
+     XPIDL_MODULE = "dom_geolocation"
+-else:
+-    UNIFIED_SOURCES += [
+-        "GeolocationSystem.cpp",
+-    ]
+ 
+ include("/ipc/chromium/chromium-config.mozbuild")
+ 
+diff --git a/modules/libpref/init/StaticPrefList.yaml b/modules/libpref/init/StaticPrefList.yaml
+index 1238e9e00079..214f06b9cbcd 100644
+--- a/modules/libpref/init/StaticPrefList.yaml
++++ b/modules/libpref/init/StaticPrefList.yaml
+@@ -5756,13 +5756,6 @@
+   mirror: always
+ #endif
+ 
+-# If true, open system preferences for the user when geolocation is requested
+-# by the user but OS geolocation permission is not available.
+-- name: geo.prompt.open_system_prefs
+-  type: bool
+-  value: true
+-  mirror: always
+-
+ #---------------------------------------------------------------------------
+ # Prefs starting with "gfx."
+ #---------------------------------------------------------------------------
+diff --git a/netwerk/build/components.conf b/netwerk/build/components.conf
+index 2d8150e6f1dd..d9fb1274908e 100644
+--- a/netwerk/build/components.conf
++++ b/netwerk/build/components.conf
+@@ -764,7 +764,6 @@ Classes = [
+ if defined('NECKO_WIFI'):
+     Classes += [
+         {
+-            'name': 'WifiMonitor',
+             'cid': '{3ff8fb9f-ee63-48df-89f0-dace0242fd82}',
+             'contract_ids': ['@mozilla.org/wifi/monitor;1'],
+             'singleton': True,
+diff --git a/netwerk/wifi/nsIWifiMonitor.idl b/netwerk/wifi/nsIWifiMonitor.idl
+index cf90c4e500c5..feda68f77e64 100644
+--- a/netwerk/wifi/nsIWifiMonitor.idl
++++ b/netwerk/wifi/nsIWifiMonitor.idl
+@@ -6,7 +6,7 @@
+ 
+ interface nsIWifiListener;
+ 
+-[scriptable, builtinclass, uuid(F289701E-D9AF-4685-BC2F-E4226FF7C018)]
++[scriptable, uuid(F289701E-D9AF-4685-BC2F-E4226FF7C018)]
+ interface nsIWifiMonitor : nsISupports
+ {
+   /*
+@@ -24,10 +24,4 @@ interface nsIWifiMonitor : nsISupports
+    * cancels all notifications to the |aListener|.
+    */
+   void stopWatching(in nsIWifiListener aListener);
+-
+-  /**
+-   * True if there is a wifi adapter present that can perform a scan.
+-   * Only valid on Windows.
+-   */
+-  [notxpcom, nostdcall] readonly attribute boolean hasWifiAdapter;
+ };
+diff --git a/netwerk/wifi/nsWifiMonitor.cpp b/netwerk/wifi/nsWifiMonitor.cpp
+index 82efedda5d92..ccab3cae4bf9 100644
+--- a/netwerk/wifi/nsWifiMonitor.cpp
++++ b/netwerk/wifi/nsWifiMonitor.cpp
+@@ -174,15 +174,6 @@ nsWifiMonitor::Observe(nsISupports* subject, const char* topic,
+   return NS_OK;
+ }
+ 
+-void nsWifiMonitor::EnsureWifiScanner() {
+-  if (mWifiScanner) {
+-    return;
+-  }
+-
+-  LOG(("Constructing WifiScanner"));
+-  mWifiScanner = MakeUnique<mozilla::WifiScannerImpl>();
+-}
+-
+ NS_IMETHODIMP nsWifiMonitor::StartWatching(nsIWifiListener* aListener,
+                                            bool aForcePolling) {
+   LOG(("nsWifiMonitor::StartWatching %p | listener %p | mPollingId %" PRIu64
+@@ -325,7 +316,10 @@ void nsWifiMonitor::Scan(uint64_t aPollingId) {
+ nsresult nsWifiMonitor::DoScan() {
+   MOZ_ASSERT(IsBackgroundThread());
+ 
+-  EnsureWifiScanner();
++  if (!mWifiScanner) {
++    LOG(("Constructing WifiScanner"));
++    mWifiScanner = MakeUnique<mozilla::WifiScannerImpl>();
++  }
+   MOZ_ASSERT(mWifiScanner);
+ 
+   LOG(("Scanning Wifi for access points"));
+@@ -398,15 +392,3 @@ nsresult nsWifiMonitor::PassErrorToWifiListeners(nsresult rv) {
+   }
+   return NS_OK;
+ }
+-
+-bool nsWifiMonitor::GetHasWifiAdapter() {
+-#ifdef XP_WIN
+-  EnsureWifiScanner();
+-  MOZ_ASSERT(mWifiScanner);
+-  return static_cast<WifiScannerImpl*>(mWifiScanner.get())->HasWifiAdapter();
+-#else
+-  MOZ_ASSERT_UNREACHABLE(
+-      "nsWifiMonitor::HasWifiAdapter is not available on this platform");
+-  return false;
+-#endif
+-}
+diff --git a/netwerk/wifi/nsWifiMonitor.h b/netwerk/wifi/nsWifiMonitor.h
+index 4890e8290d65..55a3feedeaff 100644
+--- a/netwerk/wifi/nsWifiMonitor.h
++++ b/netwerk/wifi/nsWifiMonitor.h
+@@ -62,8 +62,6 @@ class nsWifiMonitor final : public nsIWifiMonitor, public nsIObserver {
+ 
+   ~nsWifiMonitor();
+ 
+-  void EnsureWifiScanner();
+-
+   nsresult DispatchScanToBackgroundThread(uint64_t aPollingId = 0,
+                                           uint32_t aWaitMs = 0);
+ 
+diff --git a/netwerk/wifi/win/WinWifiScanner.cpp b/netwerk/wifi/win/WinWifiScanner.cpp
+index 4052cf0b13a6..b24fb4a2f1f7 100644
+--- a/netwerk/wifi/win/WinWifiScanner.cpp
++++ b/netwerk/wifi/win/WinWifiScanner.cpp
+@@ -9,10 +9,6 @@
+ 
+ namespace mozilla {
+ 
+-LazyLogModule gWifiScannerLog("WifiScanner");
+-#define WIFISCAN_LOG(args) \
+-  MOZ_LOG(mozilla::gWifiScannerLog, mozilla::LogLevel::Debug, args)
+-
+ class InterfaceScanCallbackData {
+  public:
+   explicit InterfaceScanCallbackData(uint32_t numInterfaces)
+@@ -46,7 +42,6 @@ class InterfaceScanCallbackData {
+ };
+ 
+ static void WINAPI OnScanComplete(PWLAN_NOTIFICATION_DATA data, PVOID context) {
+-  WIFISCAN_LOG(("WinWifiScanner OnScanComplete"));
+   if (WLAN_NOTIFICATION_SOURCE_ACM != data->NotificationSource) {
+     return;
+   }
+@@ -70,29 +65,19 @@ WifiScannerImpl::WifiScannerImpl() {
+   // WLAN API in the edge case.
+   mWlanLibrary.reset(WinWLANLibrary::Load());
+   if (!mWlanLibrary) {
+-    WIFISCAN_LOG(
+-        ("[%p] WinWifiScanner could not initialize Windows Wi-Fi scanner",
+-         this));
++    NS_WARNING("Could not initialize Windows Wi-Fi scanner");
+   }
+-  WIFISCAN_LOG(("[%p] WinWifiScanner created WifiScannerImpl", this));
+ }
+ 
+-WifiScannerImpl::~WifiScannerImpl() {
+-  WIFISCAN_LOG(("[%p] WinWifiScanner destroyed WifiScannerImpl", this));
+-}
++WifiScannerImpl::~WifiScannerImpl() {}
+ 
+ nsresult WifiScannerImpl::GetAccessPointsFromWLAN(
+     nsTArray<RefPtr<nsIWifiAccessPoint>>& accessPoints) {
+-  WIFISCAN_LOG(("[%p] WinWifiScanner::GetAccessPointsFromWLAN", this));
+   accessPoints.Clear();
+ 
+   // NOTE: We do not try to load the WLAN library if we previously failed
+   // to load it. See the note in WifiScannerImpl constructor
+   if (!mWlanLibrary) {
+-    WIFISCAN_LOG(
+-        ("[%p] WinWifiScanner::GetAccessPointsFromWLAN WLAN library is not "
+-         "available",
+-         this));
+     return NS_ERROR_NOT_AVAILABLE;
+   }
+ 
+@@ -101,18 +86,11 @@ nsresult WifiScannerImpl::GetAccessPointsFromWLAN(
+   if (ERROR_SUCCESS !=
+       (*mWlanLibrary->GetWlanEnumInterfacesPtr())(mWlanLibrary->GetWLANHandle(),
+                                                   nullptr, &interface_list)) {
+-    WIFISCAN_LOG(
+-        ("[%p] WinWifiScanner::GetAccessPointsFromWLAN WlanEnumInterfaces "
+-         "failed",
+-         this));
+     return NS_ERROR_FAILURE;
+   }
+ 
+   // This ensures we call WlanFreeMemory on interface_list
+   ScopedWLANObject scopedInterfaceList(*mWlanLibrary, interface_list);
+-  WIFISCAN_LOG(
+-      ("[%p] WinWifiScanner::GetAccessPointsFromWLAN found %lu interfaces",
+-       this, interface_list->dwNumberOfItems));
+ 
+   if (!interface_list->dwNumberOfItems) {
+     return NS_OK;
+@@ -126,10 +104,6 @@ nsresult WifiScannerImpl::GetAccessPointsFromWLAN(
+                            WLAN_NOTIFICATION_SOURCE_ACM, TRUE,
+                            (WLAN_NOTIFICATION_CALLBACK)OnScanComplete, &cbData,
+                            NULL, &wlanNotifySource)) {
+-    WIFISCAN_LOG(
+-        ("[%p] WinWifiScanner::GetAccessPointsFromWLAN "
+-         "WlanRegisterNotification failed",
+-         this));
+     return NS_ERROR_FAILURE;
+   }
+ 
+@@ -139,9 +113,6 @@ nsresult WifiScannerImpl::GetAccessPointsFromWLAN(
+                              mWlanLibrary->GetWLANHandle(),
+                              &interface_list->InterfaceInfo[i].InterfaceGuid,
+                              NULL, NULL, NULL)) {
+-      WIFISCAN_LOG(
+-          ("[%p] WinWifiScanner::GetAccessPointsFromWLAN WlanScan failed.",
+-           this));
+       cbData.OnInterfaceScanComplete();
+     }
+   }
+@@ -170,18 +141,9 @@ nsresult WifiScannerImpl::GetAccessPointsFromWLAN(
+                                        // unused
+                              nullptr,  // reserved
+                              &bss_list)) {
+-      WIFISCAN_LOG(
+-          ("[%p] WinWifiScanner::GetAccessPointsFromWLAN unable to get BSS "
+-           "list from interface %u",
+-           this, i));
+       continue;
+     }
+ 
+-    WIFISCAN_LOG(
+-        ("[%p] WinWifiScanner::GetAccessPointsFromWLAN BSS list has %lu access "
+-         "points",
+-         this, bss_list->dwNumberOfItems));
+-
+     // This ensures we call WlanFreeMemory on bss_list
+     ScopedWLANObject scopedBssList(*mWlanLibrary, bss_list);
+ 
+@@ -206,5 +168,3 @@ nsresult WifiScannerImpl::GetAccessPointsFromWLAN(
+ }
+ 
+ }  // namespace mozilla
+-
+-#undef WIFISCAN_LOG
+diff --git a/netwerk/wifi/win/WinWifiScanner.h b/netwerk/wifi/win/WinWifiScanner.h
+index 98d9b338eba2..ce36c1156ded 100644
+--- a/netwerk/wifi/win/WinWifiScanner.h
++++ b/netwerk/wifi/win/WinWifiScanner.h
+@@ -17,11 +17,6 @@ class WifiScannerImpl final : public WifiScanner {
+   WifiScannerImpl();
+   ~WifiScannerImpl();
+ 
+-  /**
+-   * True if there is a wifi adapter present that can perform a scan.
+-   */
+-  bool HasWifiAdapter() { return !!mWlanLibrary; }
+-
+   /**
+    * GetAccessPointsFromWLAN
+    *
+diff --git a/netwerk/wifi/win/WlanLibrary.cpp b/netwerk/wifi/win/WlanLibrary.cpp
+index 067a66aecf0c..0fd36be66097 100644
+--- a/netwerk/wifi/win/WlanLibrary.cpp
++++ b/netwerk/wifi/win/WlanLibrary.cpp
+@@ -4,14 +4,7 @@
+ 
+ #include "WlanLibrary.h"
+ 
+-#include "mozilla/Logging.h"
+-
+ // Moz headers (alphabetical)
+-namespace mozilla {
+-extern LazyLogModule gWifiScannerLog;
+-}
+-#define WIFISCAN_LOG(args) \
+-  MOZ_LOG(mozilla::gWifiScannerLog, mozilla::LogLevel::Debug, args)
+ 
+ WinWLANLibrary* WinWLANLibrary::Load() {
+   WinWLANLibrary* ret = new WinWLANLibrary();
+@@ -64,8 +57,6 @@ decltype(::WlanScan)* WinWLANLibrary::GetWlanScanPtr() const {
+ bool WinWLANLibrary::Initialize() {
+   mWlanLibrary = LoadLibraryW(L"Wlanapi.dll");
+   if (!mWlanLibrary) {
+-    WIFISCAN_LOG(
+-        ("WinWLANLibrary::Initialize failed - couldn't open wlanapi.dll"));
+     return false;
+   }
+ 
+@@ -90,8 +81,6 @@ bool WinWLANLibrary::Initialize() {
+   if (!mWlanOpenHandlePtr || !mWlanEnumInterfacesPtr ||
+       !mWlanRegisterNotificationPtr || !mWlanGetNetworkBssListPtr ||
+       !mWlanScanPtr || !mWlanFreeMemoryPtr || !mWlanCloseHandlePtr) {
+-    WIFISCAN_LOG(
+-        ("WinWLANLibrary::Initialize failed to find functions in wlanapi.dll"));
+     return false;
+   }
+ 
+@@ -104,12 +93,9 @@ bool WinWLANLibrary::Initialize() {
+   if (ERROR_SUCCESS != (*mWlanOpenHandlePtr)(kXpWlanClientVersion, nullptr,
+                                              &negotiated_version,
+                                              &mWlanHandle)) {
+-    WIFISCAN_LOG(("WinWLANLibrary::Initialize: WlanOpenHandle failed"));
+     return false;
+   }
+ 
+-  WIFISCAN_LOG(("WinWLANLibrary::Initialize succeeded - version is %lu",
+-                negotiated_version));
+   return true;
+ }
+ 
+@@ -123,5 +109,3 @@ WinWLANLibrary::~WinWLANLibrary() {
+     mWlanLibrary = nullptr;
+   }
+ }
+-
+-#undef WIFISCAN_LOG
+diff --git a/testing/profiles/mochitest/user.js b/testing/profiles/mochitest/user.js
+index f87958f8ea01..bbd8fc317020 100644
+--- a/testing/profiles/mochitest/user.js
++++ b/testing/profiles/mochitest/user.js
+@@ -31,8 +31,3 @@ user_pref("app.update.disabledForTesting", true);
+ // Therefore, in the mochitest, as the frequently in common browser tests can be
+ // super higher than the real user, we disable this feature.
+ user_pref("places.history.floodingPrevention.enabled", false);
+-
+-// If we are on a platform where we can detect that we don't have OS geolocation
+-// permission, and we can open it and wait for the user to give permission, then
+-// don't do that.
+-user_pref("geo.prompt.open_system_prefs", false);
