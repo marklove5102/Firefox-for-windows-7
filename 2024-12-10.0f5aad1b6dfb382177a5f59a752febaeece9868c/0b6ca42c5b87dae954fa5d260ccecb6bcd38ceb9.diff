@@ -1,0 +1,226 @@
+diff --git a/widget/gtk/nsWindow.cpp b/widget/gtk/nsWindow.cpp
+index 81e57db80167..37f0216b2542 100644
+--- a/widget/gtk/nsWindow.cpp
++++ b/widget/gtk/nsWindow.cpp
+@@ -740,7 +740,7 @@ void nsWindow::DidChangeParent(nsIWidget* aOldParent) {
+     return;
+   }
+ 
+-  if (!IsTopLevelWidget()) {
++  if (!IsTopLevelWindowType()) {
+     GdkWindow* window = GetToplevelGdkWindow();
+     GdkWindow* parentWindow = newParent->GetToplevelGdkWindow();
+     gdk_window_reparent(window, parentWindow, 0, 0);
+@@ -1089,7 +1089,7 @@ void nsWindow::Move(double aX, double aY) {
+ 
+   LOG("nsWindow::Move to %d x %d\n", x, y);
+ 
+-  if (mSizeMode != nsSizeMode_Normal && IsTopLevelWidget()) {
++  if (mSizeMode != nsSizeMode_Normal && IsTopLevelWindowType()) {
+     LOG("  size state is not normal, bailing");
+     return;
+   }
+@@ -3224,7 +3224,7 @@ LayoutDeviceIntRect nsWindow::GetClientBounds() {
+ }
+ 
+ void nsWindow::RecomputeClientOffset(bool aNotify) {
+-  if (!IsTopLevelWidget()) {
++  if (!IsTopLevelWindowType()) {
+     return;
+   }
+ 
+@@ -3987,7 +3987,7 @@ gboolean nsWindow::OnConfigureEvent(GtkWidget* aWidget,
+ 
+   // Don't fire configure event for scale changes, we handle that
+   // OnScaleChanged event. Skip that for toplevel windows only.
+-  if (mGdkWindow && IsTopLevelWidget()) {
++  if (mGdkWindow && IsTopLevelWindowType()) {
+     if (mCeiledScaleFactor != gdk_window_get_scale_factor(mGdkWindow)) {
+       LOG("  scale factor changed to %d,return early",
+           gdk_window_get_scale_factor(mGdkWindow));
+@@ -3997,7 +3997,7 @@ gboolean nsWindow::OnConfigureEvent(GtkWidget* aWidget,
+ 
+   LayoutDeviceIntRect screenBounds = GetScreenBounds();
+ 
+-  if (IsTopLevelWidget()) {
++  if (IsTopLevelWindowType()) {
+     // This check avoids unwanted rollup on spurious configure events from
+     // Cygwin/X (bug 672103).
+     if (mBounds.x != screenBounds.x || mBounds.y != screenBounds.y) {
+@@ -4198,7 +4198,7 @@ void nsWindow::OnLeaveNotifyEvent(GdkEventCrossing* aEvent) {
+ 
+   // The filter out for subwindows should make sure that this is targeted to
+   // this nsWindow.
+-  const bool leavingTopLevel = IsTopLevelWidget();
++  const bool leavingTopLevel = IsTopLevelWindowType();
+   if (leavingTopLevel && IsBogusLeaveNotifyEvent(mGdkWindow, aEvent)) {
+     return;
+   }
+@@ -4815,7 +4815,7 @@ void nsWindow::OnContainerFocusInEvent(GdkEventFocus* aEvent) {
+ void nsWindow::OnContainerFocusOutEvent(GdkEventFocus* aEvent) {
+   LOG("OnContainerFocusOutEvent");
+ 
+-  if (IsTopLevelWidget()) {
++  if (IsTopLevelWindowType()) {
+     // Rollup menus when a window is focused out unless a drag is occurring.
+     // This check is because drags grab the keyboard and cause a focus out on
+     // versions of GTK before 2.18.
+@@ -5346,7 +5346,7 @@ void nsWindow::OnCompositedChanged() {
+ }
+ 
+ void nsWindow::OnScaleChanged(bool aNotify) {
+-  if (!IsTopLevelWidget()) {
++  if (!IsTopLevelWindowType()) {
+     return;
+   }
+   if (!mGdkWindow) {
+@@ -5921,7 +5921,7 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+   // gfxVars, used below.
+   Unused << gfxPlatform::GetPlatform();
+ 
+-  if (IsTopLevelWidget()) {
++  if (IsTopLevelWindowType()) {
+     mGtkWindowDecoration = GetSystemGtkWindowDecoration();
+     // Inherit initial scale from our parent, or use the default monitor scale
+     // otherwise.
+@@ -6251,7 +6251,7 @@ nsresult nsWindow::Create(nsIWidget* aParent, const LayoutDeviceIntRect& aRect,
+   // Only use for toplevel windows for now, see bug 1619246.
+   if (GdkIsWaylandDisplay() &&
+       StaticPrefs::widget_wayland_vsync_enabled_AtStartup() &&
+-      IsTopLevelWidget()) {
++      IsTopLevelWindowType()) {
+     mWaylandVsyncSource = new WaylandVsyncSource(this);
+     mWaylandVsyncDispatcher = new VsyncDispatcher(mWaylandVsyncSource);
+     LOG_VSYNC("  created WaylandVsyncSource");
+@@ -6512,7 +6512,7 @@ void nsWindow::NativeMoveResize(bool aMoved, bool aResized) {
+ #define COMPOSITOR_PAUSE_TIMEOUT (1000)
+ 
+ void nsWindow::PauseCompositorFlickering() {
+-  bool pauseCompositor = IsTopLevelWidget() &&
++  bool pauseCompositor = IsTopLevelWindowType() &&
+                          mCompositorState == COMPOSITOR_ENABLED &&
+                          mCompositorWidgetDelegate && !mIsDestroyed;
+   if (!pauseCompositor) {
+@@ -6916,7 +6916,7 @@ void nsWindow::UpdateOpaqueRegionInternal() {
+     return;
+   }
+ 
+-  if (!IsTopLevelWidget()) {
++  if (!IsTopLevelWindowType()) {
+     // We need to clear target buffer alpha values of popup windows as
+     // SW-WR paints with alpha blending (see Bug 1674473).
+     return;
+@@ -8912,7 +8912,7 @@ GtkWindow* nsWindow::GetCurrentTopmostWindow() const {
+ }
+ 
+ gint nsWindow::GdkCeiledScaleFactor() {
+-  if (IsTopLevelWidget()) {
++  if (IsTopLevelWindowType()) {
+     return mCeiledScaleFactor;
+   }
+   if (nsWindow* topmost = GetTopmostWindow()) {
+@@ -8924,7 +8924,7 @@ gint nsWindow::GdkCeiledScaleFactor() {
+ double nsWindow::FractionalScaleFactor() {
+ #ifdef MOZ_WAYLAND
+   double fractional_scale = [&] {
+-    if (IsTopLevelWidget()) {
++    if (IsTopLevelWindowType()) {
+       return mFractionalScaleFactor;
+     }
+     if (nsWindow* topmost = GetTopmostWindow()) {
+@@ -9894,7 +9894,7 @@ bool nsWindow::ApplyEnterLeaveMutterWorkaround() {
+ }
+ 
+ void nsWindow::NotifyOcclusionState(OcclusionState aState) {
+-  if (!IsTopLevelWidget()) {
++  if (!IsTopLevelWindowType()) {
+     return;
+   }
+ 
+diff --git a/widget/gtk/nsWindow.h b/widget/gtk/nsWindow.h
+index 38e148313652..d1727a37ef24 100644
+--- a/widget/gtk/nsWindow.h
++++ b/widget/gtk/nsWindow.h
+@@ -879,6 +879,11 @@ class nsWindow final : public nsBaseWidget {
+   void LogPopupGravity(GdkGravity aGravity);
+ #endif
+ 
++  bool IsTopLevelWindowType() const {
++    return mWindowType == WindowType::TopLevel ||
++           mWindowType == WindowType::Dialog;
++  }
++
+   // mPopupPosition is the original popup position/size from layout, set by
+   // nsWindow::Move() or nsWindow::Resize().
+   // Popup position is relative to main (toplevel) window.
+diff --git a/widget/nsBaseWidget.cpp b/widget/nsBaseWidget.cpp
+index dee950ba77e0..e21349311c49 100644
+--- a/widget/nsBaseWidget.cpp
++++ b/widget/nsBaseWidget.cpp
+@@ -546,14 +546,7 @@ void nsBaseWidget::Destroy() {
+ 
+ nsIWidget* nsIWidget::GetTopLevelWidget() {
+   auto* cur = this;
+-  while (true) {
+-    if (cur->IsTopLevelWidget()) {
+-      break;
+-    }
+-    nsIWidget* parent = cur->GetParent();
+-    if (!parent) {
+-      break;
+-    }
++  while (nsIWidget* parent = cur->GetParent()) {
+     cur = parent;
+   }
+   return cur;
+diff --git a/widget/nsIWidget.h b/widget/nsIWidget.h
+index bbadacd8e839..8378789baa4b 100644
+--- a/widget/nsIWidget.h
++++ b/widget/nsIWidget.h
+@@ -541,14 +541,9 @@ class nsIWidget : public nsISupports {
+   /**
+    * Return the top level Widget of this Widget
+    *
+-   * @return the closest top level widget, as in IsTopLevelWidget().
++   * @return the top level widget
+    */
+   nsIWidget* GetTopLevelWidget();
+-  bool IsTopLevelWidget() const {
+-    return mWindowType == WindowType::TopLevel ||
+-           mWindowType == WindowType::Dialog ||
+-           mWindowType == WindowType::Invisible;
+-  }
+ 
+   /**
+    * Return the physical DPI of the screen containing the window ...
+diff --git a/widget/windows/nsWindow.h b/widget/windows/nsWindow.h
+index 2a763ab1c5d0..fcb6664748b1 100644
+--- a/widget/windows/nsWindow.h
++++ b/widget/windows/nsWindow.h
+@@ -187,6 +187,11 @@ class nsWindow final : public nsBaseWidget {
+    */
+   nsWindow* GetParentWindowBase(bool aIncludeOwner);
+ 
++  bool IsTopLevelWidget() const {
++    return mWindowType == WindowType::TopLevel ||
++           mWindowType == WindowType::Dialog;
++  }
++
+   // nsIWidget interface
+   using nsBaseWidget::Create;  // for Create signature not overridden here
+   [[nodiscard]] nsresult Create(nsIWidget* aParent,
+diff --git a/xpfe/appshell/AppWindow.cpp b/xpfe/appshell/AppWindow.cpp
+index 6119eddbd9e0..15251422c465 100644
+--- a/xpfe/appshell/AppWindow.cpp
++++ b/xpfe/appshell/AppWindow.cpp
+@@ -744,9 +744,7 @@ NS_IMETHODIMP AppWindow::Center(nsIAppWindow* aRelative, bool aScreen,
+     return NS_OK;
+   }
+ 
+-  if (!aScreen && !aRelative) {
+-    return NS_ERROR_INVALID_ARG;
+-  }
++  if (!aScreen && !aRelative) return NS_ERROR_INVALID_ARG;
+ 
+   nsCOMPtr<nsIScreenManager> screenmgr =
+       do_GetService("@mozilla.org/gfx/screenmanager;1", &result);
