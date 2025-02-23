@@ -1,0 +1,4 @@
+Bug 1900225: Part 6 - Wait for Windows permission dialog to be dismissed before requesting geolocation r=emilio,win-reviewers,gstoll    2024-08-28 06:47:33    48c6934e1dc7e58493b8142e35029a08d2bf4f23
+Bug 1900225: Part 5 - On Windows, do not show message about wifi scan permission if no wifi is present r=win-reviewers,necko-reviewers,valentin,gstoll    2024-08-28 06:47:33    cf53d2cd9f2325321fdaf212a37e13ed8e6ebbaf
+Bug 1900225: Part 4 - Add geo.prompt.open_system_prefs to block opening system preferences r=gstoll    2024-08-28 06:47:32    5a9e60b4decd7b81c9d561c574520ab0a83e4709
+Bug 1900225: Part 3 - Implement system geolocation permission UX on Windows r=win-reviewers,gstoll    2024-08-28 06:47:32    cacd3ce9eb7aff7f1046c0c2c031a9df30c53b0f
