@@ -1,0 +1,1 @@
+Bug 1936187 - Enable support for external video overlays with layer compositor r=gfx-reviewers,lsalzman    2024-12-13 06:06:27    bc83db0e982c5f9614f68ebdfe9a09e178acceda
