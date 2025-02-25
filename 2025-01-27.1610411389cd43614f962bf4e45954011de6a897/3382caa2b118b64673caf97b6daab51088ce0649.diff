@@ -1,0 +1,485 @@
+diff --git a/gfx/webrender_bindings/RenderCompositor.cpp b/gfx/webrender_bindings/RenderCompositor.cpp
+index 405ccf0ce4b2..c562c734068f 100644
+--- a/gfx/webrender_bindings/RenderCompositor.cpp
++++ b/gfx/webrender_bindings/RenderCompositor.cpp
+@@ -72,20 +72,6 @@ void wr_compositor_create_external_surface(void* aCompositor,
+   compositor->CreateExternalSurface(aId, aIsOpaque);
+ }
+ 
+-void wr_compositor_create_swapchain_surface(void* aCompositor,
+-                                            wr::NativeSurfaceId aId,
+-                                            wr::DeviceIntSize aSize,
+-                                            bool aIsOpaque) {
+-  RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
+-  compositor->CreateSwapChainSurface(aId, aSize, aIsOpaque);
+-}
+-
+-void wr_compositor_resize_swapchain(void* aCompositor, wr::NativeSurfaceId aId,
+-                                    wr::DeviceIntSize aSize) {
+-  RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
+-  compositor->ResizeSwapChainSurface(aId, aSize);
+-}
+-
+ void wr_compositor_create_backdrop_surface(void* aCompositor,
+                                            wr::NativeSurfaceId aId,
+                                            wr::ColorF aColor) {
+@@ -105,17 +91,6 @@ void wr_compositor_destroy_tile(void* aCompositor, wr::NativeSurfaceId aId,
+   compositor->DestroyTile(aId, aX, aY);
+ }
+ 
+-void wr_compositor_bind_swapchain(void* aCompositor, wr::NativeSurfaceId aId) {
+-  RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
+-  compositor->BindSwapChain(aId);
+-}
+-
+-void wr_compositor_present_swapchain(void* aCompositor,
+-                                     wr::NativeSurfaceId aId) {
+-  RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
+-  compositor->PresentSwapChain(aId);
+-}
+-
+ void wr_compositor_destroy_surface(void* aCompositor, NativeSurfaceId aId) {
+   RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
+   compositor->DestroySurface(aId);
+diff --git a/gfx/webrender_bindings/RenderCompositor.h b/gfx/webrender_bindings/RenderCompositor.h
+index 6ed57221810b..ac51f5fb5c87 100644
+--- a/gfx/webrender_bindings/RenderCompositor.h
++++ b/gfx/webrender_bindings/RenderCompositor.h
+@@ -130,13 +130,6 @@ class RenderCompositor {
+   virtual void CreateSurface(wr::NativeSurfaceId aId,
+                              wr::DeviceIntPoint aVirtualOffset,
+                              wr::DeviceIntSize aTileSize, bool aIsOpaque) {}
+-  virtual void CreateSwapChainSurface(wr::NativeSurfaceId aId,
+-                                      wr::DeviceIntSize aSize, bool aIsOpaque) {
+-  }
+-  virtual void ResizeSwapChainSurface(wr::NativeSurfaceId aId,
+-                                      wr::DeviceIntSize aSize) {}
+-  virtual void BindSwapChain(wr::NativeSurfaceId aId) {}
+-  virtual void PresentSwapChain(wr::NativeSurfaceId aId) {}
+   virtual void CreateExternalSurface(wr::NativeSurfaceId aId, bool aIsOpaque) {}
+   virtual void CreateBackdropSurface(wr::NativeSurfaceId aId,
+                                      wr::ColorF aColor) {}
+diff --git a/gfx/webrender_bindings/RenderCompositorANGLE.cpp b/gfx/webrender_bindings/RenderCompositorANGLE.cpp
+index 69ae53d2636e..bc38d725a002 100644
+--- a/gfx/webrender_bindings/RenderCompositorANGLE.cpp
++++ b/gfx/webrender_bindings/RenderCompositorANGLE.cpp
+@@ -837,13 +837,6 @@ void RenderCompositorANGLE::Bind(wr::NativeTileId aId,
+ 
+ void RenderCompositorANGLE::Unbind() { mDCLayerTree->Unbind(); }
+ 
+-void RenderCompositorANGLE::BindSwapChain(wr::NativeSurfaceId aId) {
+-  mDCLayerTree->BindSwapChain(aId);
+-}
+-void RenderCompositorANGLE::PresentSwapChain(wr::NativeSurfaceId aId) {
+-  mDCLayerTree->PresentSwapChain(aId);
+-}
+-
+ void RenderCompositorANGLE::CreateSurface(wr::NativeSurfaceId aId,
+                                           wr::DeviceIntPoint aVirtualOffset,
+                                           wr::DeviceIntSize aTileSize,
+@@ -851,17 +844,6 @@ void RenderCompositorANGLE::CreateSurface(wr::NativeSurfaceId aId,
+   mDCLayerTree->CreateSurface(aId, aVirtualOffset, aTileSize, aIsOpaque);
+ }
+ 
+-void RenderCompositorANGLE::CreateSwapChainSurface(wr::NativeSurfaceId aId,
+-                                                   wr::DeviceIntSize aSize,
+-                                                   bool aIsOpaque) {
+-  mDCLayerTree->CreateSwapChainSurface(aId, aSize, aIsOpaque);
+-}
+-
+-void RenderCompositorANGLE::ResizeSwapChainSurface(wr::NativeSurfaceId aId,
+-                                                   wr::DeviceIntSize aSize) {
+-  mDCLayerTree->ResizeSwapChainSurface(aId, aSize);
+-}
+-
+ void RenderCompositorANGLE::CreateExternalSurface(wr::NativeSurfaceId aId,
+                                                   bool aIsOpaque) {
+   mDCLayerTree->CreateExternalSurface(aId, aIsOpaque);
+diff --git a/gfx/webrender_bindings/RenderCompositorANGLE.h b/gfx/webrender_bindings/RenderCompositorANGLE.h
+index 1db69a26b98e..bd07419204dd 100644
+--- a/gfx/webrender_bindings/RenderCompositorANGLE.h
++++ b/gfx/webrender_bindings/RenderCompositorANGLE.h
+@@ -84,8 +84,6 @@ class RenderCompositorANGLE final : public RenderCompositor {
+             wr::DeviceIntRect aDirtyRect,
+             wr::DeviceIntRect aValidRect) override;
+   void Unbind() override;
+-  void BindSwapChain(wr::NativeSurfaceId aId) override;
+-  void PresentSwapChain(wr::NativeSurfaceId aId) override;
+   void CreateSurface(wr::NativeSurfaceId aId, wr::DeviceIntPoint aVirtualOffset,
+                      wr::DeviceIntSize aTileSize, bool aIsOpaque) override;
+   void CreateExternalSurface(wr::NativeSurfaceId aId, bool aIsOpaque) override;
+@@ -94,10 +92,6 @@ class RenderCompositorANGLE final : public RenderCompositor {
+   void DestroyTile(wr::NativeSurfaceId aId, int32_t aX, int32_t aY) override;
+   void AttachExternalImage(wr::NativeSurfaceId aId,
+                            wr::ExternalImageId aExternalImage) override;
+-  void CreateSwapChainSurface(wr::NativeSurfaceId aId, wr::DeviceIntSize aSize,
+-                              bool aIsOpaque) override;
+-  void ResizeSwapChainSurface(wr::NativeSurfaceId aId,
+-                              wr::DeviceIntSize aSize) override;
+   void AddSurface(wr::NativeSurfaceId aId,
+                   const wr::CompositorSurfaceTransform& aTransform,
+                   wr::DeviceIntRect aClipRect,
+diff --git a/gfx/webrender_bindings/WebRenderAPI.cpp b/gfx/webrender_bindings/WebRenderAPI.cpp
+index fac91580e698..9280d6bea801 100644
+--- a/gfx/webrender_bindings/WebRenderAPI.cpp
++++ b/gfx/webrender_bindings/WebRenderAPI.cpp
+@@ -131,13 +131,6 @@ class NewRenderer : public RendererEvent {
+       }
+     }
+ 
+-    // Only allow the layer compositor in nightly builds, for now.
+-    bool use_layer_compositor = false;
+-#ifdef NIGHTLY_BUILD
+-    use_layer_compositor =
+-        StaticPrefs::gfx_webrender_layer_compositor_AtStartup();
+-#endif
+-
+     if (!wr_window_new(
+             aWindowId, mSize.width, mSize.height,
+             mWindowKind == WindowKind::MAIN, supportLowPriorityTransactions,
+@@ -158,8 +151,7 @@ class NewRenderer : public RendererEvent {
+             gfx::gfxVars::WebRenderRequiresHardwareDriver(),
+             StaticPrefs::gfx_webrender_low_quality_pinch_zoom_AtStartup(),
+             StaticPrefs::gfx_webrender_max_shared_surface_size_AtStartup(),
+-            StaticPrefs::gfx_webrender_enable_subpixel_aa_AtStartup(),
+-            use_layer_compositor)) {
++            StaticPrefs::gfx_webrender_enable_subpixel_aa_AtStartup())) {
+       // wr_window_new puts a message into gfxCriticalNote if it returns false
+       MOZ_ASSERT(errorMessage);
+       mError->AssignASCII(errorMessage);
+diff --git a/gfx/webrender_bindings/src/bindings.rs b/gfx/webrender_bindings/src/bindings.rs
+index 47c077cb4c6c..a60e342adc68 100644
+--- a/gfx/webrender_bindings/src/bindings.rs
++++ b/gfx/webrender_bindings/src/bindings.rs
+@@ -38,11 +38,11 @@ use tracy_rs::register_thread_with_profiler;
+ use webrender::sw_compositor::SwCompositor;
+ use webrender::{
+     api::units::*, api::*, create_webrender_instance, render_api::*, set_profiler_hooks, AsyncPropertySampler,
+-    AsyncScreenshotHandle, Compositor, LayerCompositor, CompositorCapabilities, CompositorConfig, CompositorSurfaceTransform, Device,
++    AsyncScreenshotHandle, Compositor, CompositorCapabilities, CompositorConfig, CompositorSurfaceTransform, Device,
+     MappableCompositor, MappedTileInfo, NativeSurfaceId, NativeSurfaceInfo, NativeTileId, PartialPresentCompositor,
+     PipelineInfo, ProfilerHooks, RecordedFrameHandle, RenderBackendHooks, Renderer, RendererStats,
+     SWGLCompositeSurfaceInfo, SceneBuilderHooks, ShaderPrecacheFlags, Shaders, SharedShaders, TextureCacheConfig,
+-    UploadMethod, WebRenderOptions, WindowVisibility, ONE_TIME_USAGE_HINT, CompositorInputConfig,
++    UploadMethod, WebRenderOptions, WindowVisibility, ONE_TIME_USAGE_HINT,
+ };
+ use wr_malloc_size_of::MallocSizeOfOps;
+ 
+@@ -1278,13 +1278,6 @@ extern "C" {
+         tile_size: DeviceIntSize,
+         is_opaque: bool,
+     );
+-    fn wr_compositor_create_swapchain_surface(
+-        compositor: *mut c_void,
+-        id: NativeSurfaceId,
+-        size: DeviceIntSize,
+-        is_opaque: bool,
+-    );
+-    fn wr_compositor_resize_swapchain(compositor: *mut c_void, id: NativeSurfaceId, size: DeviceIntSize);
+     fn wr_compositor_create_external_surface(compositor: *mut c_void, id: NativeSurfaceId, is_opaque: bool);
+     fn wr_compositor_create_backdrop_surface(compositor: *mut c_void, id: NativeSurfaceId, color: ColorF);
+     fn wr_compositor_destroy_surface(compositor: *mut c_void, id: NativeSurfaceId);
+@@ -1325,8 +1318,6 @@ extern "C" {
+     fn wr_compositor_deinit(compositor: *mut c_void);
+     fn wr_compositor_get_capabilities(compositor: *mut c_void, caps: *mut CompositorCapabilities);
+     fn wr_compositor_get_window_visibility(compositor: *mut c_void, caps: *mut WindowVisibility);
+-    fn wr_compositor_bind_swapchain(compositor: *mut c_void, id: NativeSurfaceId);
+-    fn wr_compositor_present_swapchain(compositor: *mut c_void, id: NativeSurfaceId);
+     fn wr_compositor_map_tile(
+         compositor: *mut c_void,
+         id: NativeTileId,
+@@ -1501,184 +1492,6 @@ impl Compositor for WrCompositor {
+     }
+ }
+ 
+-struct NativeLayer {
+-    id: NativeSurfaceId,
+-    size: DeviceIntSize,
+-    is_opaque: bool,
+-    frames_since_used: usize,
+-}
+-
+-pub struct WrLayerCompositor {
+-    compositor: *mut c_void,
+-    next_layer_id: u64,
+-    surface_pool: Vec<NativeLayer>,
+-    visual_tree: Vec<NativeLayer>,
+-}
+-
+-impl WrLayerCompositor {
+-    fn new(compositor: *mut c_void) -> Self {
+-        WrLayerCompositor {
+-            compositor,
+-            next_layer_id: 0,
+-            surface_pool: Vec::new(),
+-            visual_tree: Vec::new(),
+-        }
+-    }
+-}
+-
+-impl LayerCompositor for WrLayerCompositor {
+-    // Begin compositing a frame with the supplied input config
+-    fn begin_frame(
+-        &mut self,
+-        input: &CompositorInputConfig,
+-    ) {
+-        unsafe {
+-            wr_compositor_begin_frame(self.compositor);
+-        }
+-
+-        assert!(self.visual_tree.is_empty());
+-
+-        for request in input.layers {
+-            let size = request.clip_rect.size();
+-
+-            let existing_index = self.surface_pool.iter().position(|layer| {
+-                layer.is_opaque == request.is_opaque
+-            });
+-
+-            let mut layer = match existing_index {
+-                Some(existing_index) => {
+-                    let mut layer = self.surface_pool.swap_remove(existing_index);
+-
+-                    layer.frames_since_used = 0;
+-
+-                    layer
+-                }
+-                None => {
+-                    let id = NativeSurfaceId(self.next_layer_id);
+-                    self.next_layer_id += 1;
+-
+-                    unsafe {
+-                        wr_compositor_create_swapchain_surface(
+-                            self.compositor,
+-                            id,
+-                            size,
+-                            request.is_opaque,
+-                        );
+-                    }
+-
+-                    NativeLayer {
+-                        id,
+-                        size,
+-                        is_opaque: request.is_opaque,
+-                        frames_since_used: 0,
+-                    }
+-                }
+-            };
+-
+-            if layer.size.width != size.width || layer.size.height != size.height {
+-                unsafe {
+-                    wr_compositor_resize_swapchain(
+-                        self.compositor,
+-                        layer.id,
+-                        size
+-                    );
+-                }
+-                layer.size = size;
+-            }
+-
+-            self.visual_tree.push(layer);
+-        }
+-
+-        for layer in &mut self.surface_pool {
+-            layer.frames_since_used += 1;
+-        }
+-    }
+-
+-    // Bind a layer by index for compositing into
+-    fn bind_layer(&mut self, index: usize) {
+-        let layer = &self.visual_tree[index];
+-
+-        unsafe {
+-            wr_compositor_bind_swapchain(
+-                self.compositor,
+-                layer.id,
+-            );
+-        }
+-    }
+-
+-    // Finish compositing a layer and present the swapchain
+-    fn present_layer(&mut self, index: usize) {
+-        let layer = &self.visual_tree[index];
+-
+-        unsafe {
+-            wr_compositor_present_swapchain(
+-                self.compositor,
+-                layer.id,
+-            );
+-        }
+-    }
+-
+-    fn add_surface(
+-        &mut self,
+-        index: usize,
+-        clip_rect: DeviceIntRect,
+-        image_rendering: ImageRendering,
+-    ) {
+-        let layer = &self.visual_tree[index];
+-
+-        // TODO(gwc): Need to set correct transform once adding video layers
+-        let transform = CompositorSurfaceTransform::identity();
+-
+-        unsafe {
+-            wr_compositor_add_surface(
+-                self.compositor,
+-                layer.id,
+-                &transform,
+-                clip_rect,
+-                image_rendering,
+-            );
+-        }
+-    }
+-
+-    // Finish compositing this frame
+-    fn end_frame(&mut self) {
+-        unsafe {
+-            wr_compositor_end_frame(self.compositor);
+-        }
+-
+-        // Destroy any unused surface pool entries
+-        let mut layers_to_destroy = Vec::new();
+-
+-        self.surface_pool.retain(|layer| {
+-            let keep = layer.frames_since_used < 3;
+-
+-            if !keep {
+-                layers_to_destroy.push(layer.id);
+-            }
+-
+-            keep
+-        });
+-
+-        for layer_id in layers_to_destroy {
+-            unsafe {
+-                wr_compositor_destroy_surface(self.compositor, layer_id);
+-            }
+-        }
+-
+-        self.surface_pool.append(&mut self.visual_tree);
+-    }
+-}
+-
+-impl Drop for WrLayerCompositor {
+-    fn drop(&mut self) {
+-        for layer in self.surface_pool.iter().chain(self.visual_tree.iter()) {
+-            unsafe {
+-                wr_compositor_destroy_surface(self.compositor, layer.id);
+-            }
+-        }
+-    }
+-}
+-
+ extern "C" {
+     fn wr_swgl_lock_composite_surface(
+         ctx: *mut c_void,
+@@ -1827,7 +1640,6 @@ pub extern "C" fn wr_window_new(
+     low_quality_pinch_zoom: bool,
+     max_shared_surface_size: i32,
+     enable_subpixel_aa: bool,
+-    use_layer_compositor: bool,
+ ) -> bool {
+     assert!(unsafe { is_in_render_thread() });
+ 
+@@ -1886,12 +1698,7 @@ pub extern "C" fn wr_window_new(
+         ColorF::new(0.0, 0.0, 0.0, 0.0)
+     };
+ 
+-    let compositor_config = if use_layer_compositor {
+-        let compositor = Box::new(WrLayerCompositor::new(compositor)) as Box<dyn LayerCompositor>;
+-        CompositorConfig::Layer {
+-            compositor,
+-        }
+-    } else if software {
++    let compositor_config = if software {
+         CompositorConfig::Native {
+             compositor: Box::new(SwCompositor::new(
+                 sw_gl.unwrap(),
+diff --git a/gfx/wr/webrender/src/composite.rs b/gfx/wr/webrender/src/composite.rs
+index 560e64911d17..f4a613915e92 100644
+--- a/gfx/wr/webrender/src/composite.rs
++++ b/gfx/wr/webrender/src/composite.rs
+@@ -1346,6 +1346,7 @@ pub struct CompositorInputLayer {
+ // TODO(gw): Include information about picture cache slices and external surfaces.
+ pub struct CompositorInputConfig<'a> {
+     pub layers: &'a [CompositorInputLayer],
++    pub framebuffer_size: DeviceIntSize,
+ }
+ 
+ // Trait for implementors of swapchain based compositing.
+diff --git a/gfx/wr/webrender/src/renderer/mod.rs b/gfx/wr/webrender/src/renderer/mod.rs
+index 6a28893ac495..8e62ed11d450 100644
+--- a/gfx/wr/webrender/src/renderer/mod.rs
++++ b/gfx/wr/webrender/src/renderer/mod.rs
+@@ -3443,7 +3443,6 @@ impl Renderer {
+         projection: &default::Transform3D<f32>,
+         results: &mut RenderResults,
+         partial_present_mode: Option<PartialPresentMode>,
+-        device_size: DeviceIntSize,
+     ) {
+         let _gm = self.gpu_profiler.start_marker("framebuffer");
+         let _timer = self.gpu_profiler.start_timer(GPU_TAG_COMPOSITE);
+@@ -3511,6 +3510,7 @@ impl Renderer {
+ 
+         for item in occlusion.opaque_items().iter().chain(occlusion.alpha_items().iter().rev()) {
+             let tile = &composite_state.tiles[item.key];
++
+             // Clear tiles overwrite whatever is under them, so they are treated as opaque.
+             let is_opaque = tile.kind != TileKind::Alpha;
+ 
+@@ -3554,7 +3554,7 @@ impl Renderer {
+             if let Some(new_layer_kind) = new_layer_kind {
+                 let (offset, clip_rect, is_opaque) = match usage {
+                     CompositorSurfaceUsage::Content => {
+-                        (DeviceIntPoint::zero(), device_size.into(), input_layers.is_empty())
++                        (DeviceIntPoint::zero(), fb_draw_target.dimensions().into(), input_layers.is_empty())
+                     }
+                     CompositorSurfaceUsage::External => {
+                         let rect = composite_state.get_device_rect(
+@@ -3599,7 +3599,7 @@ impl Renderer {
+                 usage: CompositorSurfaceUsage::Content,
+                 is_opaque: true,
+                 offset: DeviceIntPoint::zero(),
+-                clip_rect: device_size.into(),
++                clip_rect: DeviceIntRect::zero(),
+             });
+ 
+             swapchain_layers.push(SwapChainLayer {
+@@ -3613,7 +3613,9 @@ impl Renderer {
+         if let Some(ref mut compositor) = self.compositor_config.layer_compositor() {
+             let input = CompositorInputConfig {
+                 layers: &input_layers,
++                framebuffer_size: fb_draw_target.dimensions(),
+             };
++
+             compositor.begin_frame(&input);
+         }
+ 
+@@ -4943,7 +4945,6 @@ impl Renderer {
+                         &projection,
+                         results,
+                         present_mode,
+-                        device_size,
+                     );
+                 }
+             }
+diff --git a/modules/libpref/init/StaticPrefList.yaml b/modules/libpref/init/StaticPrefList.yaml
+index 3b83fa12cded..903ed53efe10 100644
+--- a/modules/libpref/init/StaticPrefList.yaml
++++ b/modules/libpref/init/StaticPrefList.yaml
+@@ -7054,15 +7054,6 @@
+ #endif
+   mirror: once
+ 
+-#ifdef NIGHTLY_BUILD
+-  # Keep this pref hidden on non-nightly builds to avoid people accidentally
+-  # turning it on.
+-- name: gfx.webrender.layer-compositor
+-  type: bool
+-  value: false
+-  mirror: once
+-#endif
+-
+ - name: gfx.webrender.scissored-cache-clears.enabled
+   type: bool
+   value: true
