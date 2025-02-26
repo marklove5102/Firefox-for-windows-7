@@ -1,0 +1,602 @@
+diff --git a/servo/components/style/values/specified/box.rs b/servo/components/style/values/specified/box.rs
+index 20d760cc4b8c..92fa2b662c28 100644
+--- a/servo/components/style/values/specified/box.rs
++++ b/servo/components/style/values/specified/box.rs
+@@ -1575,12 +1575,18 @@ pub enum Appearance {
+     /// A separator.  Can be horizontal or vertical.
+     #[parse(condition = "ParserContext::chrome_rules_enabled")]
+     Separator,
++    /// A spin control (up/down control for time/date pickers).
++    #[parse(condition = "ParserContext::chrome_rules_enabled")]
++    Spinner,
+     /// The up button of a spin control.
+     #[parse(condition = "ParserContext::chrome_rules_enabled")]
+     SpinnerUpbutton,
+     /// The down button of a spin control.
+     #[parse(condition = "ParserContext::chrome_rules_enabled")]
+     SpinnerDownbutton,
++    /// The textfield of a spin control
++    #[parse(condition = "ParserContext::chrome_rules_enabled")]
++    SpinnerTextfield,
+     /// A splitter.  Can be horizontal or vertical.
+     #[parse(condition = "ParserContext::chrome_rules_enabled")]
+     Splitter,
+diff --git a/widget/cocoa/nsNativeThemeCocoa.h b/widget/cocoa/nsNativeThemeCocoa.h
+index d554ec5f0485..fca7672979ce 100644
+--- a/widget/cocoa/nsNativeThemeCocoa.h
++++ b/widget/cocoa/nsNativeThemeCocoa.h
+@@ -44,6 +44,8 @@ class nsNativeThemeCocoa : public mozilla::widget::ThemeCocoa {
+     eDisclosureButtonOpen
+   };
+ 
++  enum class SpinButton : uint8_t { eUp, eDown };
++
+   enum class SegmentType : uint8_t { eToolbarButton, eTab };
+ 
+   enum class OptimumState : uint8_t { eOptimum, eSubOptimum, eSubSubOptimum };
+@@ -80,6 +82,12 @@ class nsNativeThemeCocoa : public mozilla::widget::ThemeCocoa {
+     bool editable = false;
+   };
+ 
++  struct SpinButtonParams {
++    mozilla::Maybe<SpinButton> pressedButton;
++    bool disabled = false;
++    bool insideActiveWindow = false;
++  };
++
+   struct SegmentParams {
+     SegmentType segmentType = SegmentType::eToolbarButton;
+     bool insideActiveWindow = false;
+@@ -138,6 +146,9 @@ class nsNativeThemeCocoa : public mozilla::widget::ThemeCocoa {
+     eRadio,           // CheckboxOrRadioParams
+     eButton,          // ButtonParams
+     eDropdown,        // DropdownParams
++    eSpinButtons,     // SpinButtonParams
++    eSpinButtonUp,    // SpinButtonParams
++    eSpinButtonDown,  // SpinButtonParams
+     eSegment,         // SegmentParams
+     eSeparator,
+     eStatusBar,  // bool
+@@ -168,6 +179,15 @@ class nsNativeThemeCocoa : public mozilla::widget::ThemeCocoa {
+     static WidgetInfo Dropdown(const DropdownParams& aParams) {
+       return WidgetInfo(Widget::eDropdown, aParams);
+     }
++    static WidgetInfo SpinButtons(const SpinButtonParams& aParams) {
++      return WidgetInfo(Widget::eSpinButtons, aParams);
++    }
++    static WidgetInfo SpinButtonUp(const SpinButtonParams& aParams) {
++      return WidgetInfo(Widget::eSpinButtonUp, aParams);
++    }
++    static WidgetInfo SpinButtonDown(const SpinButtonParams& aParams) {
++      return WidgetInfo(Widget::eSpinButtonDown, aParams);
++    }
+     static WidgetInfo Segment(const SegmentParams& aParams) {
+       return WidgetInfo(Widget::eSegment, aParams);
+     }
+@@ -217,9 +237,9 @@ class nsNativeThemeCocoa : public mozilla::widget::ThemeCocoa {
+         : mVariant(aParams), mWidget(aWidget) {}
+ 
+     mozilla::Variant<mozilla::gfx::sRGBColor, CheckboxOrRadioParams,
+-                     ButtonParams, DropdownParams, SegmentParams,
+-                     TextFieldParams, ProgressParams, MeterParams, ScaleParams,
+-                     bool>
++                     ButtonParams, DropdownParams, SpinButtonParams,
++                     SegmentParams, TextFieldParams, ProgressParams,
++                     MeterParams, ScaleParams, bool>
+         mVariant;
+ 
+     enum Widget mWidget;
+@@ -321,6 +341,12 @@ class nsNativeThemeCocoa : public mozilla::widget::ThemeCocoa {
+                   const ButtonParams& aParams);
+   void DrawDropdown(CGContextRef context, const HIRect& inBoxRect,
+                     const DropdownParams& aParams);
++  HIThemeButtonDrawInfo SpinButtonDrawInfo(ThemeButtonKind aKind,
++                                           const SpinButtonParams& aParams);
++  void DrawSpinButtons(CGContextRef context, const HIRect& inBoxRect,
++                       const SpinButtonParams& aParams);
++  void DrawSpinButton(CGContextRef context, const HIRect& inBoxRect,
++                      SpinButton aDrawnButton, const SpinButtonParams& aParams);
+   void DrawToolbar(CGContextRef cgContext, const CGRect& inBoxRect,
+                    bool aIsMain);
+   void DrawStatusBar(CGContextRef cgContext, const HIRect& inBoxRect,
+diff --git a/widget/cocoa/nsNativeThemeCocoa.mm b/widget/cocoa/nsNativeThemeCocoa.mm
+index 9ae505d53508..674a84dd2e23 100644
+--- a/widget/cocoa/nsNativeThemeCocoa.mm
++++ b/widget/cocoa/nsNativeThemeCocoa.mm
+@@ -1451,6 +1451,99 @@ void nsNativeThemeCocoa::DrawDropdown(CGContextRef cgContext,
+   NS_OBJC_END_TRY_IGNORE_BLOCK;
+ }
+ 
++MOZ_RUNINIT static const CellRenderSettings spinnerSettings = {
++    {
++        NSMakeSize(11,
++                   16),  // mini (width trimmed by 2px to reduce blank border)
++        NSMakeSize(15, 22),  // small
++        NSMakeSize(19, 27)   // regular
++    },
++    {
++        NSMakeSize(11,
++                   16),  // mini (width trimmed by 2px to reduce blank border)
++        NSMakeSize(15, 22),  // small
++        NSMakeSize(19, 27)   // regular
++    },
++    {{
++         // Leopard
++         {0, 0, 0, 0},  // mini
++         {0, 0, 0, 0},  // small
++         {0, 0, 0, 0}   // regular
++     },
++     {
++         // Yosemite
++         {0, 0, 0, 0},  // mini
++         {0, 0, 0, 0},  // small
++         {0, 0, 0, 0}   // regular
++     }}};
++
++HIThemeButtonDrawInfo nsNativeThemeCocoa::SpinButtonDrawInfo(
++    ThemeButtonKind aKind, const SpinButtonParams& aParams) {
++  HIThemeButtonDrawInfo bdi;
++  bdi.version = 0;
++  bdi.kind = aKind;
++  bdi.value = kThemeButtonOff;
++  bdi.adornment = kThemeAdornmentNone;
++
++  if (aParams.disabled) {
++    bdi.state = kThemeStateUnavailable;
++  } else if (aParams.insideActiveWindow && aParams.pressedButton) {
++    if (*aParams.pressedButton == SpinButton::eUp) {
++      bdi.state = kThemeStatePressedUp;
++    } else {
++      bdi.state = kThemeStatePressedDown;
++    }
++  } else {
++    bdi.state = kThemeStateActive;
++  }
++
++  return bdi;
++}
++
++void nsNativeThemeCocoa::DrawSpinButtons(CGContextRef cgContext,
++                                         const HIRect& inBoxRect,
++                                         const SpinButtonParams& aParams) {
++  NS_OBJC_BEGIN_TRY_IGNORE_BLOCK;
++
++  HIThemeButtonDrawInfo bdi = SpinButtonDrawInfo(kThemeIncDecButton, aParams);
++  HIThemeDrawButton(&inBoxRect, &bdi, cgContext, HITHEME_ORIENTATION, NULL);
++
++  NS_OBJC_END_TRY_IGNORE_BLOCK;
++}
++
++void nsNativeThemeCocoa::DrawSpinButton(CGContextRef cgContext,
++                                        const HIRect& inBoxRect,
++                                        SpinButton aDrawnButton,
++                                        const SpinButtonParams& aParams) {
++  NS_OBJC_BEGIN_TRY_IGNORE_BLOCK;
++
++  HIThemeButtonDrawInfo bdi =
++      SpinButtonDrawInfo(kThemeIncDecButtonMini, aParams);
++
++  // Cocoa only allows kThemeIncDecButton to paint the up and down spin buttons
++  // together as a single unit (presumably because when one button is active,
++  // the appearance of both changes (in different ways)). Here we have to paint
++  // both buttons, using clip to hide the one we don't want to paint.
++  HIRect drawRect = inBoxRect;
++  drawRect.size.height *= 2;
++  if (aDrawnButton == SpinButton::eDown) {
++    drawRect.origin.y -= inBoxRect.size.height;
++  }
++
++  // Shift the drawing a little to the left, since cocoa paints with more
++  // blank space around the visual buttons than we'd like:
++  drawRect.origin.x -= 1;
++
++  CGContextSaveGState(cgContext);
++  CGContextClipToRect(cgContext, inBoxRect);
++
++  HIThemeDrawButton(&drawRect, &bdi, cgContext, HITHEME_ORIENTATION, NULL);
++
++  CGContextRestoreGState(cgContext);
++
++  NS_OBJC_END_TRY_IGNORE_BLOCK;
++}
++
+ MOZ_RUNINIT static const CellRenderSettings progressSettings[2][2] = {
+     // Vertical progress bar.
+     {// Determined settings.
+@@ -2042,6 +2135,52 @@ Maybe<nsNativeThemeCocoa::WidgetInfo> nsNativeThemeCocoa::ComputeWidgetInfo(
+           ComputeControlParams(aFrame, elementState), buttonType}));
+     }
+ 
++    case StyleAppearance::Spinner: {
++      bool isSpinner = (aAppearance == StyleAppearance::Spinner);
++      nsIContent* content = aFrame->GetContent();
++      if (isSpinner && content->IsHTMLElement()) {
++        // In HTML the theming for the spin buttons is drawn individually into
++        // their own backgrounds instead of being drawn into the background of
++        // their spinner parent as it is for XUL.
++        break;
++      }
++      SpinButtonParams params;
++      if (content->IsElement()) {
++        if (content->AsElement()->AttrValueIs(
++                kNameSpaceID_None, nsGkAtoms::state, u"up"_ns, eCaseMatters)) {
++          params.pressedButton = Some(SpinButton::eUp);
++        } else if (content->AsElement()->AttrValueIs(
++                       kNameSpaceID_None, nsGkAtoms::state, u"down"_ns,
++                       eCaseMatters)) {
++          params.pressedButton = Some(SpinButton::eDown);
++        }
++      }
++      params.disabled = elementState.HasState(ElementState::DISABLED);
++      params.insideActiveWindow = FrameIsInActiveWindow(aFrame);
++
++      return Some(WidgetInfo::SpinButtons(params));
++    }
++
++    case StyleAppearance::SpinnerUpbutton:
++    case StyleAppearance::SpinnerDownbutton: {
++      nsNumberControlFrame* numberControlFrame =
++          nsNumberControlFrame::GetNumberControlFrameForSpinButton(aFrame);
++      if (numberControlFrame) {
++        SpinButtonParams params;
++        if (numberControlFrame->SpinnerUpButtonIsDepressed()) {
++          params.pressedButton = Some(SpinButton::eUp);
++        } else if (numberControlFrame->SpinnerDownButtonIsDepressed()) {
++          params.pressedButton = Some(SpinButton::eDown);
++        }
++        params.disabled = elementState.HasState(ElementState::DISABLED);
++        params.insideActiveWindow = FrameIsInActiveWindow(aFrame);
++        if (aAppearance == StyleAppearance::SpinnerUpbutton) {
++          return Some(WidgetInfo::SpinButtonUp(params));
++        }
++        return Some(WidgetInfo::SpinButtonDown(params));
++      }
++    } break;
++
+     case StyleAppearance::Toolbarbutton: {
+       SegmentParams params = ComputeSegmentParams(aFrame, elementState,
+                                                   SegmentType::eToolbarButton);
+@@ -2257,6 +2396,21 @@ void nsNativeThemeCocoa::RenderWidget(const WidgetInfo& aWidgetInfo,
+           DrawDropdown(cgContext, macRect, params);
+           break;
+         }
++        case Widget::eSpinButtons: {
++          SpinButtonParams params = aWidgetInfo.Params<SpinButtonParams>();
++          DrawSpinButtons(cgContext, macRect, params);
++          break;
++        }
++        case Widget::eSpinButtonUp: {
++          SpinButtonParams params = aWidgetInfo.Params<SpinButtonParams>();
++          DrawSpinButton(cgContext, macRect, SpinButton::eUp, params);
++          break;
++        }
++        case Widget::eSpinButtonDown: {
++          SpinButtonParams params = aWidgetInfo.Params<SpinButtonParams>();
++          DrawSpinButton(cgContext, macRect, SpinButton::eDown, params);
++          break;
++        }
+         case Widget::eSegment: {
+           SegmentParams params = aWidgetInfo.Params<SegmentParams>();
+           DrawSegment(cgContext, macRect, params);
+@@ -2367,6 +2521,9 @@ bool nsNativeThemeCocoa::CreateWebRenderCommandsForWidget(
+     case StyleAppearance::MozMacHelpButton:
+     case StyleAppearance::MozMacDisclosureButtonOpen:
+     case StyleAppearance::MozMacDisclosureButtonClosed:
++    case StyleAppearance::Spinner:
++    case StyleAppearance::SpinnerUpbutton:
++    case StyleAppearance::SpinnerDownbutton:
+     case StyleAppearance::Toolbarbutton:
+     case StyleAppearance::Separator:
+     case StyleAppearance::Statusbar:
+@@ -2627,6 +2784,28 @@ LayoutDeviceIntSize nsNativeThemeCocoa::GetMinimumWidgetSize(
+       break;
+     }
+ 
++    case StyleAppearance::Spinner:
++    case StyleAppearance::SpinnerUpbutton:
++    case StyleAppearance::SpinnerDownbutton: {
++      SInt32 buttonHeight = 0, buttonWidth = 0;
++      if (aFrame->GetContent()->IsXULElement()) {
++        ::GetThemeMetric(kThemeMetricLittleArrowsWidth, &buttonWidth);
++        ::GetThemeMetric(kThemeMetricLittleArrowsHeight, &buttonHeight);
++      } else {
++        NSSize size =
++            spinnerSettings
++                .minimumSizes[EnumSizeForCocoaSize(NSControlSizeMini)];
++        buttonWidth = size.width;
++        buttonHeight = size.height;
++        if (aAppearance != StyleAppearance::Spinner) {
++          // the buttons are half the height of the spinner
++          buttonHeight /= 2;
++        }
++      }
++      result.SizeTo(buttonWidth, buttonHeight);
++      break;
++    }
++
+     case StyleAppearance::Menulist:
+     case StyleAppearance::MenulistButton: {
+       SInt32 popupHeight = 0;
+@@ -2763,6 +2942,9 @@ bool nsNativeThemeCocoa::ThemeSupportsWidget(nsPresContext* aPresContext,
+     case StyleAppearance::MozMacWindow:
+     case StyleAppearance::Button:
+     case StyleAppearance::Toolbarbutton:
++    case StyleAppearance::Spinner:
++    case StyleAppearance::SpinnerUpbutton:
++    case StyleAppearance::SpinnerDownbutton:
+     case StyleAppearance::Statusbar:
+     case StyleAppearance::NumberInput:
+     case StyleAppearance::PasswordInput:
+@@ -2838,6 +3020,9 @@ bool nsNativeThemeCocoa::WidgetAppearanceDependsOnWindowFocus(
+     case StyleAppearance::Tabpanels:
+     case StyleAppearance::Menupopup:
+     case StyleAppearance::Tooltip:
++    case StyleAppearance::Spinner:
++    case StyleAppearance::SpinnerUpbutton:
++    case StyleAppearance::SpinnerDownbutton:
+     case StyleAppearance::Separator:
+     case StyleAppearance::NumberInput:
+     case StyleAppearance::PasswordInput:
+diff --git a/widget/gtk/WidgetStyleCache.cpp b/widget/gtk/WidgetStyleCache.cpp
+index a44b3ff550b4..b68b93d7b0c9 100644
+--- a/widget/gtk/WidgetStyleCache.cpp
++++ b/widget/gtk/WidgetStyleCache.cpp
+@@ -133,6 +133,12 @@ static GtkWidget* CreateButtonArrowWidget() {
+   return widget;
+ }
+ 
++static GtkWidget* CreateSpinWidget() {
++  GtkWidget* widget = gtk_spin_button_new(nullptr, 1, 0);
++  AddToWindowContainer(widget);
++  return widget;
++}
++
+ static GtkWidget* CreateEntryWidget() {
+   GtkWidget* widget = gtk_entry_new();
+   AddToWindowContainer(widget);
+@@ -698,6 +704,8 @@ static GtkWidget* CreateWidget(WidgetNodeType aAppearance) {
+       return CreateExpanderWidget();
+     case MOZ_GTK_FRAME:
+       return CreateFrameWidget();
++    case MOZ_GTK_SPINBUTTON:
++      return CreateSpinWidget();
+     case MOZ_GTK_BUTTON:
+       return CreateButtonWidget();
+     case MOZ_GTK_TOGGLE_BUTTON:
+@@ -1032,6 +1040,11 @@ static GtkStyleContext* GetCssNodeStyleInternal(WidgetNodeType aNodeType) {
+     case MOZ_GTK_PROGRESS_CHUNK:
+       style = CreateChildCSSNode("progress", MOZ_GTK_PROGRESS_TROUGH);
+       break;
++    case MOZ_GTK_SPINBUTTON_ENTRY:
++      // TODO - create from CSS node
++      style =
++          CreateSubStyleWithClass(MOZ_GTK_SPINBUTTON, GTK_STYLE_CLASS_ENTRY);
++      break;
+     case MOZ_GTK_SCROLLED_WINDOW:
+       // TODO - create from CSS node
+       style = CreateSubStyleWithClass(MOZ_GTK_SCROLLED_WINDOW,
+@@ -1173,6 +1186,10 @@ static GtkStyleContext* GetWidgetStyleInternal(WidgetNodeType aNodeType) {
+                                       GTK_STYLE_CLASS_PROGRESSBAR);
+       gtk_style_context_remove_class(style, GTK_STYLE_CLASS_TROUGH);
+       break;
++    case MOZ_GTK_SPINBUTTON_ENTRY:
++      style =
++          CreateSubStyleWithClass(MOZ_GTK_SPINBUTTON, GTK_STYLE_CLASS_ENTRY);
++      break;
+     case MOZ_GTK_SCROLLED_WINDOW:
+       style = CreateSubStyleWithClass(MOZ_GTK_SCROLLED_WINDOW,
+                                       GTK_STYLE_CLASS_FRAME);
+diff --git a/widget/gtk/gtk3drawing.cpp b/widget/gtk/gtk3drawing.cpp
+index 3323a24b0690..fc0a0313aa2c 100644
+--- a/widget/gtk/gtk3drawing.cpp
++++ b/widget/gtk/gtk3drawing.cpp
+@@ -723,6 +723,71 @@ static void moz_gtk_draw_styled_frame(GtkStyleContext* style, cairo_t* cr,
+   }
+ }
+ 
++static gint moz_gtk_inner_spin_paint(cairo_t* cr, GdkRectangle* rect,
++                                     GtkWidgetState* state,
++                                     GtkTextDirection direction) {
++  GtkStyleContext* style =
++      GetStyleContext(MOZ_GTK_SPINBUTTON, state->image_scale, direction,
++                      GetStateFlagsFromGtkWidgetState(state));
++
++  gtk_render_background(style, cr, rect->x, rect->y, rect->width, rect->height);
++  gtk_render_frame(style, cr, rect->x, rect->y, rect->width, rect->height);
++
++  /* hard code these values */
++  GdkRectangle arrow_rect;
++  arrow_rect.width = 6;
++  arrow_rect.height = 6;
++
++  // align spin to the left
++  arrow_rect.x = rect->x;
++
++  // up button
++  arrow_rect.y = rect->y + (rect->height - arrow_rect.height) / 2 - 3;
++  gtk_render_arrow(style, cr, ARROW_UP, arrow_rect.x, arrow_rect.y,
++                   arrow_rect.width);
++
++  // down button
++  arrow_rect.y = rect->y + (rect->height - arrow_rect.height) / 2 + 3;
++  gtk_render_arrow(style, cr, ARROW_DOWN, arrow_rect.x, arrow_rect.y,
++                   arrow_rect.width);
++
++  return MOZ_GTK_SUCCESS;
++}
++
++static gint moz_gtk_spin_paint(cairo_t* cr, GdkRectangle* rect,
++                               GtkWidgetState* state,
++                               GtkTextDirection direction) {
++  GtkStyleContext* style =
++      GetStyleContext(MOZ_GTK_SPINBUTTON, state->image_scale, direction);
++  gtk_render_background(style, cr, rect->x, rect->y, rect->width, rect->height);
++  gtk_render_frame(style, cr, rect->x, rect->y, rect->width, rect->height);
++  return MOZ_GTK_SUCCESS;
++}
++
++static gint moz_gtk_spin_updown_paint(cairo_t* cr, GdkRectangle* rect,
++                                      gboolean isDown, GtkWidgetState* state,
++                                      GtkTextDirection direction) {
++  GtkStyleContext* style =
++      GetStyleContext(MOZ_GTK_SPINBUTTON, state->image_scale, direction,
++                      GetStateFlagsFromGtkWidgetState(state));
++
++  gtk_render_background(style, cr, rect->x, rect->y, rect->width, rect->height);
++  gtk_render_frame(style, cr, rect->x, rect->y, rect->width, rect->height);
++
++  /* hard code these values */
++  GdkRectangle arrow_rect;
++  arrow_rect.width = 6;
++  arrow_rect.height = 6;
++  arrow_rect.x = rect->x + (rect->width - arrow_rect.width) / 2;
++  arrow_rect.y = rect->y + (rect->height - arrow_rect.height) / 2;
++  arrow_rect.y += isDown ? -1 : 1;
++
++  gtk_render_arrow(style, cr, isDown ? ARROW_DOWN : ARROW_UP, arrow_rect.x,
++                   arrow_rect.y, arrow_rect.width);
++
++  return MOZ_GTK_SUCCESS;
++}
++
+ /* See gtk_range_draw() for reference.
+  */
+ static gint moz_gtk_scale_paint(cairo_t* cr, GdkRectangle* rect,
+@@ -1530,6 +1595,11 @@ gint moz_gtk_get_widget_border(WidgetNodeType widget, gint* left, gint* top,
+     case MOZ_GTK_PROGRESSBAR:
+       w = GetWidget(MOZ_GTK_PROGRESSBAR);
+       break;
++    case MOZ_GTK_SPINBUTTON_ENTRY:
++    case MOZ_GTK_SPINBUTTON_UP:
++    case MOZ_GTK_SPINBUTTON_DOWN:
++      w = GetWidget(MOZ_GTK_SPINBUTTON);
++      break;
+     case MOZ_GTK_SCALE_HORIZONTAL:
+     case MOZ_GTK_SCALE_VERTICAL:
+       w = GetWidget(widget);
+@@ -1571,6 +1641,8 @@ gint moz_gtk_get_widget_border(WidgetNodeType widget, gint* left, gint* top,
+     case MOZ_GTK_HEADER_BAR_BUTTON_MAXIMIZE:
+     case MOZ_GTK_HEADER_BAR_BUTTON_MAXIMIZE_RESTORE:
+     /* These widgets have no borders.*/
++    case MOZ_GTK_INNER_SPIN_BUTTON:
++    case MOZ_GTK_SPINBUTTON:
+     case MOZ_GTK_WINDOW_DECORATION:
+     case MOZ_GTK_WINDOW_DECORATION_SOLID:
+     case MOZ_GTK_RESIZER:
+@@ -1921,6 +1993,20 @@ gint moz_gtk_widget_paint(WidgetNodeType widget, cairo_t* cr,
+     case MOZ_GTK_SCALE_THUMB_VERTICAL:
+       return moz_gtk_scale_thumb_paint(cr, rect, state, (GtkOrientation)flags,
+                                        direction);
++    case MOZ_GTK_INNER_SPIN_BUTTON:
++      return moz_gtk_inner_spin_paint(cr, rect, state, direction);
++    case MOZ_GTK_SPINBUTTON:
++      return moz_gtk_spin_paint(cr, rect, state, direction);
++    case MOZ_GTK_SPINBUTTON_UP:
++    case MOZ_GTK_SPINBUTTON_DOWN:
++      return moz_gtk_spin_updown_paint(
++          cr, rect, (widget == MOZ_GTK_SPINBUTTON_DOWN), state, direction);
++    case MOZ_GTK_SPINBUTTON_ENTRY: {
++      GtkStyleContext* style =
++          GetStyleContext(MOZ_GTK_SPINBUTTON_ENTRY, state->image_scale,
++                          direction, GetStateFlagsFromGtkWidgetState(state));
++      return moz_gtk_entry_paint(cr, rect, state, style, widget);
++    }
+     case MOZ_GTK_TREEVIEW:
+       return moz_gtk_treeview_paint(cr, rect, state, direction);
+     case MOZ_GTK_ENTRY:
+diff --git a/widget/gtk/gtkdrawing.h b/widget/gtk/gtkdrawing.h
+index 34d2246c94e1..0388305d3775 100644
+--- a/widget/gtk/gtkdrawing.h
++++ b/widget/gtk/gtkdrawing.h
+@@ -149,6 +149,12 @@ enum WidgetNodeType : int {
+   /* Paints a GtkScale thumb. */
+   MOZ_GTK_SCALE_THUMB_HORIZONTAL,
+   MOZ_GTK_SCALE_THUMB_VERTICAL,
++  /* Paints a GtkSpinButton */
++  MOZ_GTK_INNER_SPIN_BUTTON,
++  MOZ_GTK_SPINBUTTON,
++  MOZ_GTK_SPINBUTTON_UP,
++  MOZ_GTK_SPINBUTTON_DOWN,
++  MOZ_GTK_SPINBUTTON_ENTRY,
+   /* Paints a GtkEntry. */
+   MOZ_GTK_ENTRY,
+   /* Paints a GtkExpander. */
+diff --git a/widget/gtk/nsNativeThemeGTK.cpp b/widget/gtk/nsNativeThemeGTK.cpp
+index f7a5036f6770..45439292a1e4 100644
+--- a/widget/gtk/nsNativeThemeGTK.cpp
++++ b/widget/gtk/nsNativeThemeGTK.cpp
+@@ -251,6 +251,18 @@ bool nsNativeThemeGTK::GetGtkWidgetAndState(StyleAppearance aAppearance,
+     case StyleAppearance::Radio:
+       aGtkWidgetType = MOZ_GTK_RADIOBUTTON;
+       break;
++    case StyleAppearance::Spinner:
++      aGtkWidgetType = MOZ_GTK_SPINBUTTON;
++      break;
++    case StyleAppearance::SpinnerUpbutton:
++      aGtkWidgetType = MOZ_GTK_SPINBUTTON_UP;
++      break;
++    case StyleAppearance::SpinnerDownbutton:
++      aGtkWidgetType = MOZ_GTK_SPINBUTTON_DOWN;
++      break;
++    case StyleAppearance::SpinnerTextfield:
++      aGtkWidgetType = MOZ_GTK_SPINBUTTON_ENTRY;
++      break;
+     case StyleAppearance::Range: {
+       if (IsRangeHorizontal(aFrame)) {
+         if (aWidgetFlags) *aWidgetFlags = GTK_ORIENTATION_HORIZONTAL;
+@@ -1096,6 +1108,17 @@ LayoutDeviceIntSize nsNativeThemeGTK::GetMinimumWidgetSize(
+         result.height = height;
+       }
+     } break;
++    case StyleAppearance::Spinner:
++      // hard code these sizes
++      result.width = 14;
++      result.height = 26;
++      break;
++    case StyleAppearance::SpinnerUpbutton:
++    case StyleAppearance::SpinnerDownbutton:
++      // hard code these sizes
++      result.width = 14;
++      result.height = 13;
++      break;
+     default:
+       break;
+   }
+@@ -1164,6 +1187,10 @@ nsNativeThemeGTK::ThemeSupportsWidget(nsPresContext* aPresContext,
+     case StyleAppearance::TabScrollArrowBack:
+     case StyleAppearance::TabScrollArrowForward:
+     case StyleAppearance::Tooltip:
++    case StyleAppearance::Spinner:
++    case StyleAppearance::SpinnerUpbutton:
++    case StyleAppearance::SpinnerDownbutton:
++    case StyleAppearance::SpinnerTextfield:
+     case StyleAppearance::NumberInput:
+     case StyleAppearance::PasswordInput:
+     case StyleAppearance::Textfield:
+diff --git a/widget/nsNativeTheme.cpp b/widget/nsNativeTheme.cpp
+index a2fa0d883f01..60e94b35d343 100644
+--- a/widget/nsNativeTheme.cpp
++++ b/widget/nsNativeTheme.cpp
+@@ -581,7 +581,5 @@ bool nsNativeTheme::IsWidgetAlwaysNonNative(nsIFrame* aFrame,
+                                             StyleAppearance aAppearance) {
+   return IsWidgetScrollbarPart(aAppearance) ||
+          aAppearance == StyleAppearance::FocusOutline ||
+-         aAppearance == StyleAppearance::SpinnerUpbutton ||
+-         aAppearance == StyleAppearance::SpinnerDownbutton ||
+          (aFrame && aFrame->StyleUI()->mMozTheme == StyleMozTheme::NonNative);
+ }
+diff --git a/widget/windows/nsNativeThemeWin.cpp b/widget/windows/nsNativeThemeWin.cpp
+index b69f3542c8da..fb4ef0142a39 100644
+--- a/widget/windows/nsNativeThemeWin.cpp
++++ b/widget/windows/nsNativeThemeWin.cpp
+@@ -65,7 +65,9 @@ bool nsNativeThemeWin::IsWidgetAlwaysNonNative(nsIFrame* aFrame,
+   return Theme::IsWidgetAlwaysNonNative(aFrame, aAppearance) ||
+          aAppearance == StyleAppearance::Checkbox ||
+          aAppearance == StyleAppearance::Radio ||
+-         aAppearance == StyleAppearance::MozMenulistArrowButton;
++         aAppearance == StyleAppearance::MozMenulistArrowButton ||
++         aAppearance == StyleAppearance::SpinnerUpbutton ||
++         aAppearance == StyleAppearance::SpinnerDownbutton;
+ }
+ 
+ auto nsNativeThemeWin::IsWidgetNonNative(
