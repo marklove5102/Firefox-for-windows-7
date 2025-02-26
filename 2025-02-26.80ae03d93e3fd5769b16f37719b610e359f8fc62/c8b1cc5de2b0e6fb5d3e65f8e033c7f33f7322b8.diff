@@ -1,0 +1,832 @@
+diff --git a/gfx/wr/webrender/src/composite.rs b/gfx/wr/webrender/src/composite.rs
+index 0075a354e511..4bfe7065636f 100644
+--- a/gfx/wr/webrender/src/composite.rs
++++ b/gfx/wr/webrender/src/composite.rs
+@@ -431,16 +431,6 @@ pub struct CompositeTileDescriptor {
+     pub surface_kind: TileSurfaceKind,
+ }
+ 
+-// Whether a compositor surface / swapchain is being used
+-// by WR to render content, or is an external swapchain for video
+-#[cfg_attr(feature = "capture", derive(Serialize))]
+-#[cfg_attr(feature = "replay", derive(Deserialize))]
+-#[derive(Debug, PartialEq, Copy, Clone)]
+-pub enum CompositorSurfaceUsage {
+-    Content,
+-    External,
+-}
+-
+ /// Describes the properties that identify a surface composition uniquely.
+ #[cfg_attr(feature = "capture", derive(Serialize))]
+ #[cfg_attr(feature = "replay", derive(Deserialize))]
+@@ -1305,56 +1295,32 @@ pub trait Compositor {
+     fn get_window_visibility(&self, device: &mut Device) -> WindowVisibility;
+ }
+ 
+-// Describes the configuration for an input layer that the compositor
+-// implemention should prepare
+-pub struct CompositorInputLayer {
+-    // Device space location of the layer (pre-clip)
+-    pub offset: DeviceIntPoint,
+-    // Device space clip-rect of the layer
+-    pub clip_rect: DeviceIntRect,
+-    // Whether a content or external surface
+-    pub usage: CompositorSurfaceUsage,
+-    // If true, layer is opaque, blend can be disabled
+-    pub is_opaque: bool,
+-}
+-
+ // Provides the parameters about the frame to the compositor implementation.
+ // TODO(gw): Include information about picture cache slices and external surfaces.
+-pub struct CompositorInputConfig<'a> {
+-    pub layers: &'a [CompositorInputLayer],
++pub struct CompositorInputConfig {
+     pub framebuffer_size: DeviceIntSize,
+ }
+ 
++// Provides the configuration that the compositor selected based on the input
++// config.
++// TODO(gw): Return information about promoted surfaces and swapchain count.
++pub struct CompositorOutputConfig {
++
++}
++
+ // Skeleton trait for implementors of swapchain based compositing. For now
+ // the implementation simply binds a framebuffer-sized surface that can
+ // be presented by the native compositor.
+ // TODO(gw): Extend to handle external surfaces, layers, swgl, etc.
+ pub trait Compositor2 {
+-    // Prepare to composite a frame. Ensure that layers are constructed
+-    // to match the input config
+     fn begin_frame(
+         &mut self,
+         input: &CompositorInputConfig,
+-    );
+-
+-    // Bind a layer (by index in the input config) to begin rendering
+-    // content to it.
+-    fn bind_layer(&mut self, index: usize);
+-
+-    // Complete rendering of a layer and present / swap buffers
+-    fn present_layer(&mut self, index: usize);
+-
+-    fn add_surface(
+-        &mut self,
+-        index: usize,
+-        clip_rect: DeviceIntRect,
+-        image_rendering: ImageRendering,
+-    );
++    ) -> CompositorOutputConfig;
+ 
+-    // Finish compositing this frame - commit the visual tree to the OS
+     fn end_frame(&mut self);
+ 
+     // Get current information about the window, such as opacity
+     fn get_window_properties(&self) -> WindowProperties;
+ }
+ 
+diff --git a/gfx/wr/webrender/src/lib.rs b/gfx/wr/webrender/src/lib.rs
+index c970ccf299e3..77b36a46f17a 100644
+--- a/gfx/wr/webrender/src/lib.rs
++++ b/gfx/wr/webrender/src/lib.rs
+@@ -166,7 +166,7 @@ pub extern crate api;
+ extern crate webrender_build;
+ 
+ #[doc(hidden)]
+-pub use crate::composite::{Compositor2, CompositorInputConfig, CompositorSurfaceUsage};
++pub use crate::composite::{Compositor2, CompositorInputConfig, CompositorOutputConfig};
+ pub use crate::composite::{CompositorConfig, Compositor, CompositorCapabilities, CompositorSurfaceTransform};
+ pub use crate::composite::{NativeSurfaceId, NativeTileId, NativeSurfaceInfo, PartialPresentCompositor};
+ pub use crate::composite::{MappableCompositor, MappedTileInfo, SWGLCompositeSurfaceInfo, WindowVisibility, WindowProperties};
+diff --git a/gfx/wr/webrender/src/renderer/mod.rs b/gfx/wr/webrender/src/renderer/mod.rs
+index 11f67d25504e..b5e380323c47 100644
+--- a/gfx/wr/webrender/src/renderer/mod.rs
++++ b/gfx/wr/webrender/src/renderer/mod.rs
+@@ -54,11 +54,11 @@ use crate::batch::{AlphaBatchContainer, BatchKind, BatchFeatures, BatchTextures,
+ use crate::batch::ClipMaskInstanceList;
+ #[cfg(any(feature = "capture", feature = "replay"))]
+ use crate::capture::{CaptureConfig, ExternalCaptureImage, PlainExternalImage};
+-use crate::composite::{CompositeState, CompositeTileSurface, CompositorInputLayer, CompositorSurfaceTransform, ResolvedExternalSurface};
++use crate::composite::{CompositeState, CompositeTileSurface, ResolvedExternalSurface, CompositorSurfaceTransform};
+ use crate::composite::{CompositorKind, Compositor, NativeTileId, CompositeFeatures, CompositeSurfaceFormat, ResolvedExternalSurfaceColorData};
+ use crate::composite::{CompositorConfig, NativeSurfaceOperationDetails, NativeSurfaceId, NativeSurfaceOperation};
+ use crate::composite::TileKind;
+-use crate::{debug_colors, Compositor2, CompositorInputConfig, CompositorSurfaceUsage};
++use crate::{debug_colors, Compositor2, CompositorInputConfig};
+ use crate::device::{DepthFunction, Device, DrawTarget, ExternalTexture, GpuFrameId, UploadPBOPool};
+ use crate::device::{ReadTarget, ShaderError, Texture, TextureFilter, TextureFlags, TextureSlot, Texel};
+ use crate::device::query::{GpuSampler, GpuTimer};
+@@ -265,15 +265,6 @@ const GPU_TAG_COMPOSITE: GpuProfileTag = GpuProfileTag {
+     color: debug_colors::TOMATO,
+ };
+ 
+-#[derive(Debug)]
+-// Defines the content that we will draw to a given swapchain / layer, calculated
+-// after occlusion culling.
+-struct SwapChainLayer {
+-    opaque_items: Vec<occlusion::Item<usize>>,
+-    alpha_items: Vec<occlusion::Item<usize>>,
+-    clear_tiles: Vec<occlusion::Item<usize>>,
+-}
+-
+ /// The clear color used for the texture cache when the debug display is enabled.
+ /// We use a shade of blue so that we can still identify completely blue items in
+ /// the texture cache.
+@@ -3342,12 +3333,11 @@ impl Renderer {
+         &mut self,
+         composite_state: &CompositeState,
+         draw_target: DrawTarget,
+-        clear_color: ColorF,
+         projection: &default::Transform3D<f32>,
+         results: &mut RenderResults,
+         partial_present_mode: Option<PartialPresentMode>,
+         occlusion: &occlusion::FrontToBackBuilder<usize>,
+-        layer: &SwapChainLayer,
++        clear_tiles: &[occlusion::Item<usize>],
+     ) {
+         self.device.bind_draw_target(draw_target);
+         self.device.disable_depth_write();
+@@ -3365,7 +3355,7 @@ impl Renderer {
+         }
+ 
+         // Clear the framebuffer
+-        let clear_color = Some(clear_color.to_array());
++        let clear_color = Some(self.clear_color.to_array());
+ 
+         match partial_present_mode {
+             Some(PartialPresentMode::Single { dirty_rect }) => {
+@@ -3388,12 +3378,11 @@ impl Renderer {
+             }
+         }
+ 
+-        // Draw opaque tiles
+-        if !layer.opaque_items.is_empty() {
++        if !occlusion.opaque_items().is_empty() {
+             let opaque_sampler = self.gpu_profiler.start_sampler(GPU_SAMPLER_TAG_OPAQUE);
+             self.set_blend(false, FramebufferKind::Main);
+             self.draw_tile_list(
+-                layer.opaque_items.iter(),
++                occlusion.opaque_items().iter(),
+                 &composite_state,
+                 &composite_state.external_surfaces,
+                 projection,
+@@ -3402,13 +3391,12 @@ impl Renderer {
+             self.gpu_profiler.finish_sampler(opaque_sampler);
+         }
+ 
+-        // Draw clear tiles
+-        if !layer.clear_tiles.is_empty() {
++        if !clear_tiles.is_empty() {
+             let transparent_sampler = self.gpu_profiler.start_sampler(GPU_SAMPLER_TAG_TRANSPARENT);
+             self.set_blend(true, FramebufferKind::Main);
+             self.device.set_blend_mode_premultiplied_dest_out();
+             self.draw_tile_list(
+-                layer.clear_tiles.iter(),
++                clear_tiles.iter(),
+                 &composite_state,
+                 &composite_state.external_surfaces,
+                 projection,
+@@ -3418,12 +3406,12 @@ impl Renderer {
+         }
+ 
+         // Draw alpha tiles
+-        if !layer.alpha_items.is_empty() {
++        if !occlusion.alpha_items().is_empty() {
+             let transparent_sampler = self.gpu_profiler.start_sampler(GPU_SAMPLER_TAG_TRANSPARENT);
+             self.set_blend(true, FramebufferKind::Main);
+             self.set_blend_mode_premultiplied_alpha(FramebufferKind::Main);
+             self.draw_tile_list(
+-                layer.alpha_items.iter(),
++                occlusion.alpha_items().iter().rev(),
+                 &composite_state,
+                 &composite_state.external_surfaces,
+                 projection,
+@@ -3440,7 +3428,7 @@ impl Renderer {
+     fn composite_simple(
+         &mut self,
+         composite_state: &CompositeState,
+-        fb_draw_target: DrawTarget,
++        draw_target: DrawTarget,
+         projection: &default::Transform3D<f32>,
+         results: &mut RenderResults,
+         partial_present_mode: Option<PartialPresentMode>,
+@@ -3448,19 +3436,7 @@ impl Renderer {
+         let _gm = self.gpu_profiler.start_marker("framebuffer");
+         let _timer = self.gpu_profiler.start_timer(GPU_TAG_COMPOSITE);
+ 
+-        let window_is_opaque = match self.compositor_config.layer_compositor() {
+-            Some(ref compositor) => {
+-                let props = compositor.get_window_properties();
+-                props.is_opaque
+-            }
+-            None => true,
+-        };
+-
+-        let mut input_layers: Vec<CompositorInputLayer> = Vec::new();
+-        let mut swapchain_layers = Vec::new();
+         let cap = composite_state.tiles.len();
+-        let mut occlusion = occlusion::FrontToBackBuilder::with_capacity(cap, cap);
+-        let mut clear_tiles = Vec::new();
+ 
+         // We are only interested in tiles backed with actual cached pixels so we don't
+         // count clear tiles here.
+@@ -3461,6 +3445,9 @@ impl Renderer {
+             .filter(|tile| tile.kind != TileKind::Clear).count();
+         self.profile.set(profiler::PICTURE_TILES, num_tiles);
+ 
++        let mut occlusion = occlusion::FrontToBackBuilder::with_capacity(cap, cap);
++        let mut clear_tiles = Vec::new();
++
+         for (idx, tile) in composite_state.tiles.iter().enumerate() {
+             // Clear tiles overwrite whatever is under them, so they are treated as opaque.
+             let is_opaque = tile.kind != TileKind::Alpha;
+@@ -3496,194 +3496,41 @@ impl Renderer {
+                 continue;
+             }
+ 
+-            // For normal tiles, add to occlusion tracker. For clear tiles, add directly
+-            // to the swapchain tile list
+-            match tile.kind {
+-                TileKind::Opaque | TileKind::Alpha => {
+-                    // Store (index of tile, index of layer) so we can segment them below
+-                    occlusion.add(&rect, is_opaque, idx);
+-                }
+-                TileKind::Clear => {
+-                    // Clear tiles are specific to how we render the window buttons on
+-                    // Windows 8. They clobber what's under them so they can be treated as opaque,
+-                    // but require a different blend state so they will be rendered after the opaque
+-                    // tiles and before transparent ones.
+-                    clear_tiles.push(occlusion::Item { rectangle: rect, key: idx });
+-                }
+-            }
+-        }
+-
+-        assert_eq!(swapchain_layers.len(), input_layers.len());
+-
+-        for item in occlusion.opaque_items().iter().chain(occlusion.alpha_items().iter().rev()) {
+-            let tile = &composite_state.tiles[item.key];
+-
+-            // Clear tiles overwrite whatever is under them, so they are treated as opaque.
+-            let is_opaque = tile.kind != TileKind::Alpha;
+-
+-            // Determine if the tile is an external surface or content
+-            let usage = match tile.surface {
+-                CompositeTileSurface::Texture { .. } |
+-                CompositeTileSurface::Color { .. } |
+-                CompositeTileSurface::Clear => {
+-                    CompositorSurfaceUsage::Content
+-                }
+-                CompositeTileSurface::ExternalSurface { .. } => {
+-                    CompositorSurfaceUsage::Content
+-                }
+-            };
+-
+-            // Determine whether we need a new layer, and if so, what kind
+-            let new_layer_kind = match input_layers.last() {
+-                Some(curr_layer) => {
+-                    match (curr_layer.usage, usage) {
+-                        // Content -> content, composite in to same layer
+-                        (CompositorSurfaceUsage::Content, CompositorSurfaceUsage::Content) => None,
+-
+-                        // Switch of layer type, or video -> video, need new swapchain
+-                        (CompositorSurfaceUsage::Content, CompositorSurfaceUsage::External) |
+-                        (CompositorSurfaceUsage::External, CompositorSurfaceUsage::Content) |
+-                        (CompositorSurfaceUsage::External, CompositorSurfaceUsage::External) => {
+-                            // Only create a new layer if we're using Compositor2
+-                            self.compositor2.as_ref().map(|_| usage)
+-                        }
+-                    }
+-                }
+-                None => {
+-                    // No layers yet, so we need a new one
+-                    Some(usage)
+-                }
+-            };
+-
+-            if let Some(new_layer_kind) = new_layer_kind {
+-                let (offset, clip_rect, is_opaque) = match usage {
+-                    CompositorSurfaceUsage::Content => {
+-                        (
+-                            DeviceIntPoint::zero(),
+-                            fb_draw_target.dimensions().into(),
+-                            input_layers.is_empty() && window_is_opaque,
+-                        )
+-                    }
+-                    CompositorSurfaceUsage::External => {
+-                        let rect = composite_state.get_device_rect(
+-                            &tile.local_rect,
+-                            tile.transform_index
+-                        );
+-
+-                        let clip_rect = tile.device_clip_rect.to_i32();
+-
+-                        (rect.min.to_i32(), clip_rect, is_opaque)
+-                    }
+-                };
+-
+-                input_layers.push(CompositorInputLayer {
+-                    usage: new_layer_kind,
+-                    is_opaque,
+-                    offset,
+-                    clip_rect,
+-                });
+-
+-                swapchain_layers.push(SwapChainLayer {
+-                    opaque_items: Vec::new(),
+-                    alpha_items: Vec::new(),
+-                    clear_tiles: Vec::new(),
+-                })
+-            }
+-
+-            let item = occlusion::Item {
+-                rectangle: item.rectangle,
+-                key: item.key,
+-            };
+-
+-            let layer = swapchain_layers.last_mut().unwrap();
+-            if is_opaque {
+-                layer.opaque_items.push(item);
+-            } else {
+-                layer.alpha_items.push(item);
++            if tile.kind == TileKind::Clear {
++                // Clear tiles are specific to how we render the window buttons on
++                // Windows 8. They clobber what's under them so they can be treated as opaque,
++                // but require a different blend state so they will be rendered after the opaque
++                // tiles and before transparent ones.
++                clear_tiles.push(occlusion::Item { rectangle: rect, key: idx });
++                continue;
+             }
++            occlusion.add(&rect, is_opaque, idx);
+         }
+ 
+-        // If no tiles were present, add an empty layer to force
+-        // a composite that clears the screen, to match existing
+-        // semantics.
+-        if input_layers.is_empty() {
+-            input_layers.push(CompositorInputLayer {
+-                usage: CompositorSurfaceUsage::Content,
+-                is_opaque: true,
+-                offset: DeviceIntPoint::zero(),
+-                clip_rect: DeviceIntRect::zero(),
+-            });
+-
+-            swapchain_layers.push(SwapChainLayer {
+-                opaque_items: Vec::new(),
+-                alpha_items: Vec::new(),
+-                clear_tiles: Vec::new(),
+-            })
+-        }
+-
+-        // Start compositing if using OS compositor
++        // If experimental compositor is enabled, notify it that we are beginning
++        // a frame composite. As this expands, we'll likely split it in to a different
++        // function that `composite_simple`, as it begins to diverge.
+         if let Some(ref mut compositor) = self.compositor2 {
+             let input = CompositorInputConfig {
+-                layers: &input_layers,
+-                framebuffer_size: fb_draw_target.dimensions(),
++                framebuffer_size: draw_target.dimensions(),
+             };
+ 
+             compositor.begin_frame(&input);
+         }
+ 
+-        for (layer_index, (layer, swapchain_layer)) in input_layers.iter().zip(swapchain_layers.iter()).enumerate() {
+-            self.device.reset_state();
+-
+-            let clear_color = if layer_index == 0 {
+-                self.clear_color
+-            } else {
+-                ColorF::TRANSPARENT
+-            };
+-
+-            let draw_target = match self.compositor2 {
+-                Some(ref mut compositor) => {
+-                    compositor.bind_layer(layer_index);
+-
+-                    DrawTarget::NativeSurface {
+-                        offset: -layer.offset,
+-                        external_fbo_id: 0,
+-                        dimensions: fb_draw_target.dimensions(),
+-                    }
+-                }
+-                None => {
+-                    fb_draw_target
+-                }
+-            };
+-
+-            // TODO(gwc): When supporting external attached swapchains, need to skip the composite pass here
+-
+-            // Draw each compositing pass in to a swap chain
+-            self.composite_pass(
+-                composite_state,
+-                draw_target,
+-                clear_color,
+-                projection,
+-                results,
+-                partial_present_mode,
+-                &occlusion,
+-                swapchain_layer,
+-            );
+-
+-            if let Some(ref mut compositor) = self.compositor2 {
+-                compositor.present_layer(layer_index);
+-            }
+-        }
++        // Draw each compositing pass in to a swap chain
++        self.composite_pass(
++            composite_state,
++            draw_target,
++            projection,
++            results,
++            partial_present_mode,
++            &occlusion,
++            &clear_tiles,
++        );
+ 
+         // End frame notify for experimental compositor
+         if let Some(ref mut compositor) = self.compositor2 {
+-            for (layer_index, layer) in input_layers.iter().enumerate() {
+-                compositor.add_surface(
+-                    layer_index,
+-                    layer.clip_rect,
+-                    ImageRendering::Auto,
+-                );
+-            }
+-
+             compositor.end_frame();
+         }
+     }
+diff --git a/gfx/wr/wrench/src/composite.cpp b/gfx/wr/wrench/src/composite.cpp
+index 1922d132ae11..b592b3478048 100644
+--- a/gfx/wr/wrench/src/composite.cpp
++++ b/gfx/wr/wrench/src/composite.cpp
+@@ -17,7 +17,7 @@ using namespace Microsoft::WRL;
+ // A basic composition layer backed by a swap-chain for DirectComposition
+ class Layer {
+  public:
+-  Layer(int width, int height, bool is_opaque, const ComPtr<IDXGIFactory2>& dxgiFactory,
++  Layer(int width, int height, const ComPtr<IDXGIFactory2>& dxgiFactory,
+         const ComPtr<ID3D11Device>& d3dDevice,
+         const ComPtr<IDCompositionDesktopDevice>& dCompDevice) {
+     HRESULT hr;
+@@ -33,8 +33,10 @@ class Layer {
+     // DXGI_SCALING_NONE caused swap chain creation failure.
+     desc.Scaling = DXGI_SCALING_STRETCH;
+     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+-    desc.AlphaMode = is_opaque ? DXGI_ALPHA_MODE_IGNORE : DXGI_ALPHA_MODE_PREMULTIPLIED;
++    desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+     desc.Flags = 0;
++    // TODO(gw): Select opaque swap chain when appropriate
++    desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
+ 
+     // Create a swap-chain, visual, attach them and get the backbuffer texture
+     // to draw to
+@@ -104,27 +106,21 @@ class Compositor {
+   ~Compositor() {}
+ 
+   // Construct a layer of given dimensions.
+-  Layer* create_layer(int width, int height, bool is_opaque) {
++  Layer* create_layer(int width, int height) {
+     Layer* layer =
+-        new Layer(width, height, is_opaque, pIDXGIFactory, pD3DDevice, pDCompDevice);
++        new Layer(width, height, pIDXGIFactory, pD3DDevice, pDCompDevice);
+ 
+-    return layer;
+-  }
+-
+-  void begin_frame() {
+-    pRootVisual->RemoveAllVisuals();
+-  }
+-
+-  void add_layer(Layer *layer) {
+-    // TODO(gwc): Don't add the visual during creation. Once we support multiple
++    // TODO(gw): Don't add the visual during creation. Once we support multiple
+     // swap-chain layers, we'll need to support rebuilding the visual tree for
+     // DC as needed.
+     HRESULT hr = pRootVisual->AddVisual(layer->mVisual.Get(), FALSE, nullptr);
+     assert(SUCCEEDED(hr));
++
++    return layer;
+   }
+ 
+   void end_frame() {
+-    // TODO(gwc): Only commit if the visual tree was rebuilt
++    // TODO(gw): Only commit if the visual tree was rebuilt
+     pDCompDevice->Commit();
+   }
+ 
+@@ -148,8 +144,8 @@ Compositor* wrc_new(void* d3d11_device, void* hwnd) {
+ 
+ void wrc_delete(Compositor* compositor) { delete compositor; }
+ 
+-Layer* wrc_create_layer(Compositor* compositor, int width, int height, bool is_opaque) {
+-  return compositor->create_layer(width, height, is_opaque);
++Layer* wrc_create_layer(Compositor* compositor, int width, int height) {
++  return compositor->create_layer(width, height);
+ }
+ 
+ void* wrc_get_layer_backbuffer(Layer* layer) {
+@@ -159,19 +155,7 @@ void* wrc_get_layer_backbuffer(Layer* layer) {
+ 
+ void wrc_present_layer(Layer* layer) { layer->mSwapChain->Present(0, 0); }
+ 
+-void wrc_begin_frame(Compositor* compositor) { compositor->begin_frame(); }
+-
+ void wrc_end_frame(Compositor* compositor) { compositor->end_frame(); }
+-
+-void wrc_add_layer(Compositor *compositor, Layer *layer) {
+-  compositor->add_layer(layer);
+-}
+-
+-void wrc_set_layer_position(Layer *layer, float x, float y) {
+-    layer->mVisual->SetOffsetX(x);
+-    layer->mVisual->SetOffsetY(y);
+-}
+-
+ }
+ 
+ #endif
+diff --git a/gfx/wr/wrench/src/composite.rs b/gfx/wr/wrench/src/composite.rs
+index 13c44c2e5dcf..eae95c2b0b05 100644
+--- a/gfx/wr/wrench/src/composite.rs
++++ b/gfx/wr/wrench/src/composite.rs
+@@ -6,7 +6,7 @@ use std::os::raw::c_void;
+ use std::ptr;
+ 
+ use glutin::platform::windows::EGLContext;
+-use webrender::{Compositor2, CompositorInputConfig};
++use webrender::{Compositor2, CompositorInputConfig, CompositorOutputConfig};
+ use winit::platform::windows::WindowExtWindows;
+ 
+ use crate::WindowWrapper;
+@@ -37,13 +37,10 @@ extern "C" {
+     fn wrc_new(d3d11_device: *const c_void, hwnd: *const c_void) -> CompositorHandle;
+     fn wrc_delete(compositor: CompositorHandle);
+ 
+-    fn wrc_create_layer(compositor: CompositorHandle, width: i32, height: i32, is_opaque: bool) -> LayerId;
++    fn wrc_create_layer(compositor: CompositorHandle, width: i32, height: i32) -> LayerId;
+     fn wrc_get_layer_backbuffer(layer_id: LayerId) -> *mut c_void;
+-    fn wrc_set_layer_position(layer_id: LayerId, x: f32, y: f32);
+     fn wrc_present_layer(layer_id: LayerId);
+-    fn wrc_add_layer(compositor: CompositorHandle, layer_id: LayerId);
+ 
+-    fn wrc_begin_frame(compositor: CompositorHandle);
+     fn wrc_end_frame(compositor: CompositorHandle);
+ }
+ 
+@@ -52,10 +49,10 @@ struct WrLayer {
+     // Layer dimensions
+     width: i32,
+     height: i32,
+-    // EGL surface that gets bound for webrender to draw to
+-    surface: EGLSurface,
+     // Handle to the FFI layer
+     layer_id: LayerId,
++    // EGL surface that gets bound for webrender to draw to
++    surface: EGLSurface,
+ }
+ 
+ impl WrLayer {
+@@ -76,8 +73,8 @@ pub struct WrCompositor {
+     display: EGLDisplay,
+     // FFI compositor handle
+     compositor: CompositorHandle,
+-    // The swapchain layers needed for current scene
+-    layers: Vec<WrLayer>,
++    // The main swapchain layer - in future we'll have a pool of layers here
++    main_layer: WrLayer,
+ }
+ 
+ impl WrCompositor {
+@@ -102,7 +99,7 @@ impl WrCompositor {
+             display,
+             context,
+             compositor,
+-            layers: Vec::new(),
++            main_layer: WrLayer::empty(),
+         }
+     }
+ }
+@@ -123,146 +120,98 @@ impl Compositor2 for WrCompositor {
+     fn begin_frame(
+         &mut self,
+         input: &CompositorInputConfig,
+-    ) {
+-        unsafe {
+-            // Reset DC visual tree
+-            wrc_begin_frame(self.compositor);
+-        }
+-
+-        let prev_layer_count = self.layers.len();
+-        let curr_layer_count = input.layers.len();
+-
+-        if prev_layer_count > curr_layer_count {
+-            todo!();
+-        } else if curr_layer_count > prev_layer_count {
+-            // Construct new empty layers, they'll get resized below
+-            for _ in 0 .. curr_layer_count-prev_layer_count {
+-                self.layers.push(WrLayer::empty());
+-            }
+-        }
+-
+-        assert_eq!(self.layers.len(), input.layers.len());
+-
+-        for (input, layer) in input.layers.iter().zip(self.layers.iter_mut()) {
+-            let input_size = input.rect.size();
+-
+-            // TODO(gwc): Handle External surfaces as swapchains separate from content
+-
+-            // See if we need to resize the swap-chain layer
+-            if input_size.width != layer.width ||
+-                input_size.height != layer.height {
+-                // TODO: Handle resize of layer (not needed for initial commit,
+-                // but will need to support resizing wrench window)
+-                assert_eq!(layer.layer_id, LayerId::INVALID);
+-
+-                // Construct a DC swap-chain
+-                layer.width = input_size.width;
+-                layer.height = input_size.height;
+-                layer.layer_id = unsafe {
+-                    wrc_create_layer(self.compositor, layer.width, layer.height, input.is_opaque)
+-                };
+-
+-                let pbuffer_attribs: [EGLint; 5] = [
+-                    egl::ffi::WIDTH as EGLint, layer.width,
+-                    egl::ffi::HEIGHT as EGLint, layer.height,
+-                    egl::ffi::NONE as EGLint,
+-                ];
+-
+-                let attribs: [EGLint; 18] = [
+-                    egl::ffi::SURFACE_TYPE as EGLint, egl::ffi::WINDOW_BIT as EGLint,
+-                    egl::ffi::RED_SIZE as EGLint, 8,
+-                    egl::ffi::GREEN_SIZE as EGLint, 8,
+-                    egl::ffi::BLUE_SIZE as EGLint, 8,
+-                    egl::ffi::ALPHA_SIZE as EGLint, 8,
+-                    egl::ffi::RENDERABLE_TYPE as EGLint, egl::ffi::OPENGL_ES2_BIT as EGLint,
+-                    // TODO(gw): Can we disable z-buffer for compositing always?
+-                    egl::ffi::DEPTH_SIZE as EGLint, 24,
+-                    egl::ffi::STENCIL_SIZE as EGLint, 8,
+-                    egl::ffi::NONE as EGLint, egl::ffi::NONE as EGLint
+-                ];
+-
+-                // Get the D3D backbuffer texture for the swap-chain
+-                let back_buffer = unsafe {
+-                    wrc_get_layer_backbuffer(layer.layer_id)
+-                };
+-
+-                // Create an EGL surface <-> binding to the D3D backbuffer texture
+-                let mut egl_config = ptr::null();
+-                let mut cfg_count = 0;
+-
+-                let ok = unsafe {
+-                    egl::ffi::ChooseConfig(self.display, attribs.as_ptr(), &mut egl_config, 1, &mut cfg_count)
+-                };
+-
+-                assert_ne!(ok, 0);
+-                assert_eq!(cfg_count, 1);
+-                assert_ne!(egl_config, ptr::null());
+-
+-                let surface = unsafe {
+-                    egl::ffi::CreatePbufferFromClientBuffer(
+-                        self.display,
+-                        egl::ffi::D3D_TEXTURE_ANGLE,
+-                        back_buffer,
+-                        egl_config,
+-                        pbuffer_attribs.as_ptr(),
+-                    )
+-                };
+-                assert_ne!(surface, ptr::null());
+-
+-                layer.surface = surface;
+-            }
++    ) -> CompositorOutputConfig {
++        let output = CompositorOutputConfig {
++        };
+ 
+-            unsafe {
+-                wrc_set_layer_position(
+-                    layer.layer_id,
+-                    input.rect.min.x as f32,
+-                    input.rect.min.y as f32,
+-                );
+-            }
++        // See if we need to construct a primary swap-chain layer
++        if self.main_layer.width != input.framebuffer_size.width ||
++           self.main_layer.height != input.framebuffer_size.height {
++            // TODO: Handle resize of layer (not needed for initial commit,
++            // but will need to support resizing wrench window)
++            assert_eq!(self.main_layer.layer_id, LayerId::INVALID);
++
++            // Construct a DC swap-chain
++            let layer_id = unsafe {
++                wrc_create_layer(self.compositor, input.framebuffer_size.width, input.framebuffer_size.height)
++            };
++
++            let pbuffer_attribs: [EGLint; 5] = [
++                egl::ffi::WIDTH as EGLint, input.framebuffer_size.width,
++                egl::ffi::HEIGHT as EGLint, input.framebuffer_size.height,
++                egl::ffi::NONE as EGLint,
++            ];
++
++            let attribs: [EGLint; 18] = [
++                egl::ffi::SURFACE_TYPE as EGLint, egl::ffi::WINDOW_BIT as EGLint,
++                egl::ffi::RED_SIZE as EGLint, 8,
++                egl::ffi::GREEN_SIZE as EGLint, 8,
++                egl::ffi::BLUE_SIZE as EGLint, 8,
++                egl::ffi::ALPHA_SIZE as EGLint, 8,
++                egl::ffi::RENDERABLE_TYPE as EGLint, egl::ffi::OPENGL_ES2_BIT as EGLint,
++                // TODO(gw): Can we disable z-buffer for compositing always?
++                egl::ffi::DEPTH_SIZE as EGLint, 24,
++                egl::ffi::STENCIL_SIZE as EGLint, 8,
++                egl::ffi::NONE as EGLint, egl::ffi::NONE as EGLint
++            ];
++
++            // Get the D3D backbuffer texture for the swap-chain
++            let back_buffer = unsafe {
++                wrc_get_layer_backbuffer(layer_id)
++            };
++
++            // Create an EGL surface <-> binding to the D3D backbuffer texture
++            let mut egl_config = ptr::null();
++            let mut cfg_count = 0;
++
++            let ok = unsafe {
++                egl::ffi::ChooseConfig(self.display, attribs.as_ptr(), &mut egl_config, 1, &mut cfg_count)
++            };
++
++            assert_ne!(ok, 0);
++            assert_eq!(cfg_count, 1);
++            assert_ne!(egl_config, ptr::null());
++
++            let surface = unsafe {
++                egl::ffi::CreatePbufferFromClientBuffer(
++                    self.display,
++                    egl::ffi::D3D_TEXTURE_ANGLE,
++                    back_buffer,
++                    egl_config,
++                    pbuffer_attribs.as_ptr(),
++                )
++            };
++            assert_ne!(surface, ptr::null());
++
++            self.main_layer = WrLayer {
++                width: input.framebuffer_size.width,
++                height: input.framebuffer_size.height,
++                layer_id,
++                surface,
++            };
+         }
+-    }
+ 
+-    // Bind a layer by index for compositing into
+-    fn bind_layer(&mut self, index: usize) {
+         // Bind the DC surface to EGL so that WR can composite to the layer
+-        let layer = &self.layers[index];
+-
+         let ok = unsafe {
+             egl::ffi::MakeCurrent(
+                 self.display,
+-                layer.surface,
+-                layer.surface,
++                self.main_layer.surface,
++                self.main_layer.surface,
+                 self.context,
+             )
+         };
+         assert!(ok != 0);
+-    }
+ 
+-    // Finish compositing a layer and present the swapchain
+-    fn present_layer(&mut self, index: usize) {
+-        let layer = &self.layers[index];
+-
+-        unsafe {
+-            wrc_present_layer(layer.layer_id);
+-        }
+-    }
+-
+-    fn add_surface(
+-            &mut self,
+-            index: usize,
+-            _clip_rect: webrender::api::units::DeviceIntRect,
+-            _image_rendering: webrender::api::ImageRendering,
+-        ) {
+-        let layer = &self.layers[index];
+-
+-        unsafe {
+-            wrc_add_layer(self.compositor, layer.layer_id);
+-        }
++        output
+     }
+ 
+     // Finish compositing this frame
+     fn end_frame(&mut self) {
+         unsafe {
++            // TODO(gw): Once multiple layers are supported, present gets called on each
++            //           layer, as required, rather than during `end_frame`.
++            wrc_present_layer(self.main_layer.layer_id);
++
+             // Do any final commits to DC
+             wrc_end_frame(self.compositor);
+         }
