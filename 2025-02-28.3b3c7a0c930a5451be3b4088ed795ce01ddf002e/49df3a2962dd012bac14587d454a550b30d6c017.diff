@@ -1,0 +1,300 @@
+diff --git a/gfx/webrender_bindings/src/bindings.rs b/gfx/webrender_bindings/src/bindings.rs
+index ef1a37f85589..f10bbabd7efb 100644
+--- a/gfx/webrender_bindings/src/bindings.rs
++++ b/gfx/webrender_bindings/src/bindings.rs
+@@ -1565,7 +1565,7 @@ impl LayerCompositor for WrLayerCompositor {
+ 
+                     unsafe {
+                         match request.usage {
+-                            CompositorSurfaceUsage::Content | CompositorSurfaceUsage::DebugOverlay => {
++                            CompositorSurfaceUsage::Content => {
+                                 wr_compositor_create_swapchain_surface(
+                                     self.compositor,
+                                     id,
+@@ -1594,7 +1594,7 @@ impl LayerCompositor for WrLayerCompositor {
+             };
+ 
+             match layer.usage {
+-                CompositorSurfaceUsage::Content | CompositorSurfaceUsage::DebugOverlay => {
++                CompositorSurfaceUsage::Content => {
+                     if layer.size.width != size.width || layer.size.height != size.height {
+                         unsafe {
+                             wr_compositor_resize_swapchain(
+diff --git a/gfx/wr/webrender/src/composite.rs b/gfx/wr/webrender/src/composite.rs
+index 993f194cb6b1..1a8397a2def2 100644
+--- a/gfx/wr/webrender/src/composite.rs
++++ b/gfx/wr/webrender/src/composite.rs
+@@ -473,7 +473,6 @@ pub enum CompositorSurfaceUsage {
+         external_image_id: ExternalImageId,
+         transform_index: CompositorTransformIndex,
+     },
+-    DebugOverlay,
+ }
+ 
+ impl CompositorSurfaceUsage {
+@@ -490,10 +489,6 @@ impl CompositorSurfaceUsage {
+             (CompositorSurfaceUsage::External { image_key: key1, .. }, CompositorSurfaceUsage::External { image_key: key2, .. }) => {
+                 key1 == key2
+             }
+-
+-            (CompositorSurfaceUsage::DebugOverlay, CompositorSurfaceUsage::DebugOverlay) => true,
+-
+-            (CompositorSurfaceUsage::DebugOverlay, _) | (_, CompositorSurfaceUsage::DebugOverlay) => false,
+         }
+     }
+ }
+diff --git a/gfx/wr/webrender/src/renderer/mod.rs b/gfx/wr/webrender/src/renderer/mod.rs
+index 06eea476ccf8..68207418b487 100644
+--- a/gfx/wr/webrender/src/renderer/mod.rs
++++ b/gfx/wr/webrender/src/renderer/mod.rs
+@@ -708,8 +708,6 @@ struct DebugOverlayState {
+     /// The current size of the debug overlay surface. None implies that the
+     /// debug surface isn't currently allocated.
+     current_size: Option<DeviceIntSize>,
+-
+-    layer_index: usize,
+ }
+ 
+ impl DebugOverlayState {
+@@ -717,7 +715,6 @@ impl DebugOverlayState {
+         DebugOverlayState {
+             is_enabled: false,
+             current_size: None,
+-            layer_index: 0,
+         }
+     }
+ }
+@@ -1372,60 +1369,45 @@ impl Renderer {
+     fn bind_debug_overlay(&mut self, device_size: DeviceIntSize) -> Option<DrawTarget> {
+         // Debug overlay setup are only required in native compositing mode
+         if self.debug_overlay_state.is_enabled {
+-            match self.current_compositor_kind {
+-                CompositorKind::Native { .. } => {
+-                    let compositor = self.compositor_config.compositor().unwrap();
+-                    let surface_size = self.debug_overlay_state.current_size.unwrap();
+-
+-                    // Ensure old surface is invalidated before binding
+-                    compositor.invalidate_tile(
+-                        &mut self.device,
+-                        NativeTileId::DEBUG_OVERLAY,
+-                        DeviceIntRect::from_size(surface_size),
+-                    );
+-                    // Bind the native surface
+-                    let surface_info = compositor.bind(
+-                        &mut self.device,
+-                        NativeTileId::DEBUG_OVERLAY,
+-                        DeviceIntRect::from_size(surface_size),
+-                        DeviceIntRect::from_size(surface_size),
+-                    );
+-
+-                    // Bind the native surface to current FBO target
+-                    let draw_target = DrawTarget::NativeSurface {
+-                        offset: surface_info.origin,
+-                        external_fbo_id: surface_info.fbo_id,
+-                        dimensions: surface_size,
+-                    };
+-                    self.device.bind_draw_target(draw_target);
++            if let CompositorKind::Native { .. } = self.current_compositor_kind {
++                let compositor = self.compositor_config.compositor().unwrap();
++                let surface_size = self.debug_overlay_state.current_size.unwrap();
+ 
+-                    // When native compositing, clear the debug overlay each frame.
+-                    self.device.clear_target(
+-                        Some([0.0, 0.0, 0.0, 0.0]),
+-                        None, // debug renderer does not use depth
+-                        None,
+-                    );
++                // Ensure old surface is invalidated before binding
++                compositor.invalidate_tile(
++                    &mut self.device,
++                    NativeTileId::DEBUG_OVERLAY,
++                    DeviceIntRect::from_size(surface_size),
++                );
++                // Bind the native surface
++                let surface_info = compositor.bind(
++                    &mut self.device,
++                    NativeTileId::DEBUG_OVERLAY,
++                    DeviceIntRect::from_size(surface_size),
++                    DeviceIntRect::from_size(surface_size),
++                );
+ 
+-                    Some(draw_target)
+-                }
+-                CompositorKind::Layer { .. } => {
+-                    let compositor = self.compositor_config.layer_compositor().unwrap();
+-                    compositor.bind_layer(self.debug_overlay_state.layer_index);
++                // Bind the native surface to current FBO target
++                let draw_target = DrawTarget::NativeSurface {
++                    offset: surface_info.origin,
++                    external_fbo_id: surface_info.fbo_id,
++                    dimensions: surface_size,
++                };
++                self.device.bind_draw_target(draw_target);
+ 
+-                    self.device.clear_target(
+-                        Some([0.0, 0.0, 0.0, 0.0]),
+-                        None, // debug renderer does not use depth
+-                        None,
+-                    );
++                // When native compositing, clear the debug overlay each frame.
++                self.device.clear_target(
++                    Some([0.0, 0.0, 0.0, 0.0]),
++                    None, // debug renderer does not use depth
++                    None,
++                );
+ 
+-                    Some(DrawTarget::new_default(device_size, self.device.surface_origin_is_top_left()))
+-                }
+-                CompositorKind::Draw { .. } => {
+-                    // If we're not using the native compositor, then the default
+-                    // frame buffer is already bound. Create a DrawTarget for it and
+-                    // return it.
+-                    Some(DrawTarget::new_default(device_size, self.device.surface_origin_is_top_left()))
+-                }
++                Some(draw_target)
++            } else {
++                // If we're not using the native compositor, then the default
++                // frame buffer is already bound. Create a DrawTarget for it and
++                // return it.
++                Some(DrawTarget::new_default(device_size, self.device.surface_origin_is_top_left()))
+             }
+         } else {
+             None
+@@ -1436,27 +1418,20 @@ impl Renderer {
+     fn unbind_debug_overlay(&mut self) {
+         // Debug overlay setup are only required in native compositing mode
+         if self.debug_overlay_state.is_enabled {
+-            match self.current_compositor_kind {
+-                CompositorKind::Native { .. } => {
+-                    let compositor = self.compositor_config.compositor().unwrap();
+-                    // Unbind the draw target and add it to the visual tree to be composited
+-                    compositor.unbind(&mut self.device);
++            if let CompositorKind::Native { .. } = self.current_compositor_kind {
++                let compositor = self.compositor_config.compositor().unwrap();
++                // Unbind the draw target and add it to the visual tree to be composited
++                compositor.unbind(&mut self.device);
+ 
+-                    compositor.add_surface(
+-                        &mut self.device,
+-                        NativeSurfaceId::DEBUG_OVERLAY,
+-                        CompositorSurfaceTransform::identity(),
+-                        DeviceIntRect::from_size(
+-                            self.debug_overlay_state.current_size.unwrap(),
+-                        ),
+-                        ImageRendering::Auto,
+-                    );
+-                }
+-                CompositorKind::Draw { .. } => {}
+-                CompositorKind::Layer { .. } => {
+-                    let compositor = self.compositor_config.layer_compositor().unwrap();
+-                    compositor.present_layer(self.debug_overlay_state.layer_index);
+-                }
++                compositor.add_surface(
++                    &mut self.device,
++                    NativeSurfaceId::DEBUG_OVERLAY,
++                    CompositorSurfaceTransform::identity(),
++                    DeviceIntRect::from_size(
++                        self.debug_overlay_state.current_size.unwrap(),
++                    ),
++                    ImageRendering::Auto,
++                );
+             }
+         }
+     }
+@@ -1764,17 +1739,10 @@ impl Renderer {
+             // Inform the client that we are finished this composition transaction if native
+             // compositing is enabled. This must be called after any debug / profiling compositor
+             // surfaces have been drawn and added to the visual tree.
+-            match self.current_compositor_kind {
+-                CompositorKind::Layer { .. } => {
+-                    let compositor = self.compositor_config.layer_compositor().unwrap();
+-                    compositor.end_frame();
+-                }
+-                CompositorKind::Native { .. } => {
+-                    profile_scope!("compositor.end_frame");
+-                    let compositor = self.compositor_config.compositor().unwrap();
+-                    compositor.end_frame(&mut self.device);
+-                }
+-                CompositorKind::Draw { .. } => {}
++            if let CompositorKind::Native { .. } = self.current_compositor_kind {
++                profile_scope!("compositor.end_frame");
++                let compositor = self.compositor_config.compositor().unwrap();
++                compositor.end_frame(&mut self.device);
+             }
+         }
+ 
+@@ -3619,11 +3587,6 @@ impl Renderer {
+                                 }
+                             }
+                         }
+-
+-                        // Should not encounter debug layers here
+-                        (CompositorSurfaceUsage::DebugOverlay, _) | (_, CompositorSurfaceUsage::DebugOverlay) => {
+-                            unreachable!();
+-                        }
+                     }
+                 }
+                 None => {
+@@ -3651,7 +3614,6 @@ impl Renderer {
+ 
+                         (rect.min.to_i32(), clip_rect, is_opaque)
+                     }
+-                    CompositorSurfaceUsage::DebugOverlay => unreachable!(),
+                 };
+ 
+                 input_layers.push(CompositorInputLayer {
+@@ -3699,24 +3661,6 @@ impl Renderer {
+             })
+         }
+ 
+-        // Add a debug overlay request if enabled
+-        if self.debug_overlay_state.is_enabled {
+-            self.debug_overlay_state.layer_index = input_layers.len();
+-
+-            input_layers.push(CompositorInputLayer {
+-                usage: CompositorSurfaceUsage::DebugOverlay,
+-                is_opaque: false,
+-                offset: DeviceIntPoint::zero(),
+-                clip_rect: device_size.into(),
+-            });
+-
+-            swapchain_layers.push(SwapChainLayer {
+-                opaque_items: Vec::new(),
+-                alpha_items: Vec::new(),
+-                clear_tiles: Vec::new(),
+-            })
+-        }
+-
+         // Start compositing if using OS compositor
+         if let Some(ref mut compositor) = self.compositor_config.layer_compositor() {
+             let input = CompositorInputConfig {
+@@ -3728,10 +3672,10 @@ impl Renderer {
+         for (layer_index, (layer, swapchain_layer)) in input_layers.iter().zip(swapchain_layers.iter()).enumerate() {
+             self.device.reset_state();
+ 
+-            // Skip compositing external images or debug layers here
++            // Skip compositing external images
+             match layer.usage {
+                 CompositorSurfaceUsage::Content => {}
+-                CompositorSurfaceUsage::External { .. } | CompositorSurfaceUsage::DebugOverlay => {
++                CompositorSurfaceUsage::External { .. } => {
+                     continue;
+                 }
+             }
+@@ -3785,7 +3729,6 @@ impl Renderer {
+                 let transform = match layer.usage {
+                     CompositorSurfaceUsage::Content => CompositorSurfaceTransform::identity(),
+                     CompositorSurfaceUsage::External { transform_index, .. } => composite_state.get_compositor_transform(transform_index),
+-                    CompositorSurfaceUsage::DebugOverlay => CompositorSurfaceTransform::identity(),
+                 };
+ 
+                 compositor.add_surface(
+@@ -3795,6 +3738,8 @@ impl Renderer {
+                     ImageRendering::Auto,
+                 );
+             }
++
++            compositor.end_frame();
+         }
+     }
+ 
