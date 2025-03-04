@@ -1,0 +1,1 @@
+Bug 1818418 - Use `reg.exe` to implement MSIX 1-click set-to-default. r=mhughes    2023-11-05 06:58:30    cfde427e23f64d3de918ced3e27f63a34875fab6

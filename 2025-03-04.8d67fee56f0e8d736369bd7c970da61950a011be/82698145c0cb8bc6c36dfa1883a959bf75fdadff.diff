@@ -1,0 +1,19 @@
+diff --git a/gfx/wr/webrender/src/renderer/mod.rs b/gfx/wr/webrender/src/renderer/mod.rs
+index 68207418b487..6b76a0447705 100644
+--- a/gfx/wr/webrender/src/renderer/mod.rs
++++ b/gfx/wr/webrender/src/renderer/mod.rs
+@@ -3643,10 +3643,10 @@ impl Renderer {
+             }
+         }
+ 
+-        // If no tiles were present, and we expect an opaque window,
+-        // ddd an empty layer to force a composite that clears the screen,
+-        // to match existing semantics.
+-        if window_is_opaque && input_layers.is_empty() {
++        // If no tiles were present, add an empty layer to force
++        // a composite that clears the screen, to match existing
++        // semantics.
++        if input_layers.is_empty() {
+             input_layers.push(CompositorInputLayer {
+                 usage: CompositorSurfaceUsage::Content,
+                 is_opaque: true,
