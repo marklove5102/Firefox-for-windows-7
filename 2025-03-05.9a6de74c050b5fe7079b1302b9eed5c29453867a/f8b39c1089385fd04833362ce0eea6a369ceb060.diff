@@ -1,0 +1,16 @@
+diff --git a/gfx/webrender_bindings/RenderCompositorANGLE.cpp b/gfx/webrender_bindings/RenderCompositorANGLE.cpp
+index ed5c27f04152..bc8eee613ba1 100644
+--- a/gfx/webrender_bindings/RenderCompositorANGLE.cpp
++++ b/gfx/webrender_bindings/RenderCompositorANGLE.cpp
+@@ -817,11 +817,6 @@ bool RenderCompositorANGLE::UseCompositor() const {
+ }
+ 
+ bool RenderCompositorANGLE::SupportAsyncScreenshot() {
+-#ifdef NIGHTLY_BUILD
+-  if (StaticPrefs::gfx_webrender_layer_compositor_AtStartup()) {
+-    return true;
+-  }
+-#endif
+   return !UseCompositor() && !mDisablingNativeCompositor;
+ }
+ 
