@@ -1,0 +1,1 @@
+Bug 1948882 - Fix incorrect opaque swapchain layer on empty composites of transparent windows r=gfx-reviewers,lsalzman    2025-02-26 03:30:48    82698145c0cb8bc6c36dfa1883a959bf75fdadff
