@@ -1,0 +1,1 @@
+Bug 1950768 - Support debug and profiler overlay with layer-compositor enabled r=gfx-reviewers,lsalzman    2025-02-28 03:27:25    49df3a2962dd012bac14587d454a550b30d6c017

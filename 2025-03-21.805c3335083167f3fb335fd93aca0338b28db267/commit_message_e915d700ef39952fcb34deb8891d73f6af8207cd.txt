@@ -1,0 +1,1 @@
+Bug 1952216 - Fix ordering of compositor swap-chains in some cases with layer compositor enabled r=gfx-reviewers,sotaro    2025-03-18 06:42:45    e915d700ef39952fcb34deb8891d73f6af8207cd

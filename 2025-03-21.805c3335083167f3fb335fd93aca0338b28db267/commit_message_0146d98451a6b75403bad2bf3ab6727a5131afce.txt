@@ -1,0 +1,1 @@
+Bug 1951548 - Fix occlusion tracking with layer-compositor with video + overlay swapchains present r=gfx-reviewers,lsalzman    2025-03-06 04:36:37    0146d98451a6b75403bad2bf3ab6727a5131afce
