@@ -1,0 +1,1 @@
+Bug 1941466 - Fix selection of layer compositor when all native compositing is disabled r=gfx-reviewers,lsalzman    2025-01-15 03:26:45    f12cd14bddd140e072d3eb052fed3277c8cdf3ef
