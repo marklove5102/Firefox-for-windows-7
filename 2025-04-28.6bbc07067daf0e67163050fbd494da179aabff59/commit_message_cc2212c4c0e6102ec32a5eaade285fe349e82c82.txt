@@ -1,0 +1,1 @@
+Bug 1957581 - Don't apply menuitem padding to menubar items on windows. r=desktop-theme-reviewers,Itiel    2025-04-03 02:42:19    cc2212c4c0e6102ec32a5eaade285fe349e82c82
