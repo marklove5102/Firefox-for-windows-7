@@ -78,22 +78,29 @@ Windows 7, 8, 10, 11 with [Microsoft Visual C++ Redistributable](https://learn.m
    - mozconfig for i686-pc-windows-msvc:
 
      ```bash
+     ac_add_options MOZ_TELEMETRY_REPORTING=1
      ac_add_options --target=i686-pc-windows-msvc
      ac_add_options --enable-optimize
-     ac_add_options --enable-official-branding
-     ac_add_options --enable-release
-     ac_add_options --disable-sandbox
      ac_add_options --disable-tests
+     ac_add_options MOZ_PGO=1
+     ac_add_options --enable-clang-plugin
+     export MOZ_LTO=cross
+     ac_add_options --enable-js-shell
+     ac_add_options --enable-rust-simd
      ```
 
    - mozconfig for x86_64-pc-windows-msvc:
 
      ```bash
+     ac_add_options MOZ_TELEMETRY_REPORTING=1
      ac_add_options --target=x86_64-pc-windows-msvc
      ac_add_options --enable-optimize
-     ac_add_options --enable-official-branding
-     ac_add_options --enable-release
      ac_add_options --disable-tests
+     ac_add_options MOZ_PGO=1
+     ac_add_options --enable-clang-plugin
+     export MOZ_LTO=cross
+     ac_add_options --enable-js-shell
+     ac_add_options --enable-rust-simd
      ```
 
    - ```bash
