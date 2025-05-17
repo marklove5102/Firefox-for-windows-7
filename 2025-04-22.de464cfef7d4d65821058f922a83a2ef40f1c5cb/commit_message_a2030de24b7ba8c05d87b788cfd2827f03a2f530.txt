@@ -1,0 +1,1 @@
+Bug 1151767: On Windows, make level 1 the default content sandbox on Nightly. r=blassey    2015-04-28 23:06:29    a2030de24b7ba8c05d87b788cfd2827f03a2f530

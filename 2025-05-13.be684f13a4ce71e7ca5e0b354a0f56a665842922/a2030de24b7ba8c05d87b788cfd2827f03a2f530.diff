@@ -1,0 +1,21 @@
+diff --git a/toolkit/components/startup/nsAppStartup.cpp b/toolkit/components/startup/nsAppStartup.cpp
+index 316a86d5fcad..6d5dab329d7c 100644
+--- a/toolkit/components/startup/nsAppStartup.cpp
++++ b/toolkit/components/startup/nsAppStartup.cpp
+@@ -28,6 +28,7 @@
+ #include "mozilla/ResultExtensions.h"
+ #include "mozilla/Try.h"
+ #include "mozilla/Unused.h"
++#include "mozilla/WindowsVersion.h"
+ 
+ #include "GeckoProfiler.h"
+ #include "prprf.h"
+@@ -167,6 +168,8 @@ nsAppStartup::nsAppStartup()
+ 
+   // Make sure to clear this in case we restart again non-silently.
+   PR_SetEnv("MOZ_APP_SILENT_START=");
++  if (!IsWin7OrLater())
++      PR_SetEnv("MOZ_DISABLE_CONTENT_SANDBOX=1");
+ 
+ #ifdef XP_WIN
+   char* mozAppAllowWindowless = PR_GetEnv("MOZ_APP_ALLOW_WINDOWLESS");

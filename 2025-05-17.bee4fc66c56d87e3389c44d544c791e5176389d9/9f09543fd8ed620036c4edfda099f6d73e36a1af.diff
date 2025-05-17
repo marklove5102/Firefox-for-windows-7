@@ -1,0 +1,430 @@
+diff --git a/servo/components/style/values/specified/box.rs b/servo/components/style/values/specified/box.rs
+index 26e248ad9a9d..92fa2b662c28 100644
+--- a/servo/components/style/values/specified/box.rs
++++ b/servo/components/style/values/specified/box.rs
+@@ -1575,12 +1575,18 @@ pub enum Appearance {
+     /// A separator.  Can be horizontal or vertical.
+     #[parse(condition = "ParserContext::chrome_rules_enabled")]
+     Separator,
++    /// A spin control (up/down control for time/date pickers).
++    #[parse(condition = "ParserContext::chrome_rules_enabled")]
++    Spinner,
+     /// The up button of a spin control.
+     #[parse(condition = "ParserContext::chrome_rules_enabled")]
+     SpinnerUpbutton,
+     /// The down button of a spin control.
+     #[parse(condition = "ParserContext::chrome_rules_enabled")]
+     SpinnerDownbutton,
++    /// The textfield of a spin control
++    #[parse(condition = "ParserContext::chrome_rules_enabled")]
++    SpinnerTextfield,
+     /// A status bar in a main application window.
+     #[parse(condition = "ParserContext::chrome_rules_enabled")]
+     Statusbar,
+@@ -1596,6 +1602,11 @@ pub enum Appearance {
+     /// The tab panels container.
+     #[parse(condition = "ParserContext::chrome_rules_enabled")]
+     Tabpanels,
++    /// The tabs scroll arrows (left/right).
++    #[parse(condition = "ParserContext::chrome_rules_enabled")]
++    TabScrollArrowBack,
++    #[parse(condition = "ParserContext::chrome_rules_enabled")]
++    TabScrollArrowForward,
+     /// A single toolbar button (with no associated dropdown).
+     #[parse(condition = "ParserContext::chrome_rules_enabled")]
+     Toolbarbutton,
+diff --git a/toolkit/themes/shared/checkbox.css b/toolkit/themes/shared/checkbox.css
+index 63dc95ecc855..9f9a135b023b 100644
+--- a/toolkit/themes/shared/checkbox.css
++++ b/toolkit/themes/shared/checkbox.css
+@@ -62,8 +62,6 @@ checkbox {
+   }
+ 
+   @media (-moz-platform: linux) {
+-    width: 1.3em;
+-    height: 1.3em;
+     margin: 2px;
+     margin-inline-end: 4px;
+   }
+diff --git a/widget/cocoa/nsNativeThemeCocoa.h b/widget/cocoa/nsNativeThemeCocoa.h
+index 4aed2ae655fe..fca7672979ce 100644
+--- a/widget/cocoa/nsNativeThemeCocoa.h
++++ b/widget/cocoa/nsNativeThemeCocoa.h
+@@ -44,6 +44,8 @@ class nsNativeThemeCocoa : public mozilla::widget::ThemeCocoa {
+     eDisclosureButtonOpen
+   };
+ 
++  enum class SpinButton : uint8_t { eUp, eDown };
++
+   enum class SegmentType : uint8_t { eToolbarButton, eTab };
+ 
+   enum class OptimumState : uint8_t { eOptimum, eSubOptimum, eSubSubOptimum };
+@@ -80,6 +82,12 @@ class nsNativeThemeCocoa : public mozilla::widget::ThemeCocoa {
+     bool editable = false;
+   };
+ 
++  struct SpinButtonParams {
++    mozilla::Maybe<SpinButton> pressedButton;
++    bool disabled = false;
++    bool insideActiveWindow = false;
++  };
++
+   struct SegmentParams {
+     SegmentType segmentType = SegmentType::eToolbarButton;
+     bool insideActiveWindow = false;
+@@ -133,12 +141,15 @@ class nsNativeThemeCocoa : public mozilla::widget::ThemeCocoa {
+   };
+ 
+   enum Widget : uint8_t {
+-    eColorFill,  // mozilla::gfx::sRGBColor
+-    eCheckbox,   // CheckboxOrRadioParams
+-    eRadio,      // CheckboxOrRadioParams
+-    eButton,     // ButtonParams
+-    eDropdown,   // DropdownParams
+-    eSegment,    // SegmentParams
++    eColorFill,       // mozilla::gfx::sRGBColor
++    eCheckbox,        // CheckboxOrRadioParams
++    eRadio,           // CheckboxOrRadioParams
++    eButton,          // ButtonParams
++    eDropdown,        // DropdownParams
++    eSpinButtons,     // SpinButtonParams
++    eSpinButtonUp,    // SpinButtonParams
++    eSpinButtonDown,  // SpinButtonParams
++    eSegment,         // SegmentParams
+     eSeparator,
+     eStatusBar,  // bool
+     eGroupBox,
+@@ -168,6 +179,15 @@ class nsNativeThemeCocoa : public mozilla::widget::ThemeCocoa {
+     static WidgetInfo Dropdown(const DropdownParams& aParams) {
+       return WidgetInfo(Widget::eDropdown, aParams);
+     }
++    static WidgetInfo SpinButtons(const SpinButtonParams& aParams) {
++      return WidgetInfo(Widget::eSpinButtons, aParams);
++    }
++    static WidgetInfo SpinButtonUp(const SpinButtonParams& aParams) {
++      return WidgetInfo(Widget::eSpinButtonUp, aParams);
++    }
++    static WidgetInfo SpinButtonDown(const SpinButtonParams& aParams) {
++      return WidgetInfo(Widget::eSpinButtonDown, aParams);
++    }
+     static WidgetInfo Segment(const SegmentParams& aParams) {
+       return WidgetInfo(Widget::eSegment, aParams);
+     }
+@@ -217,9 +237,9 @@ class nsNativeThemeCocoa : public mozilla::widget::ThemeCocoa {
+         : mVariant(aParams), mWidget(aWidget) {}
+ 
+     mozilla::Variant<mozilla::gfx::sRGBColor, CheckboxOrRadioParams,
+-                     ButtonParams, DropdownParams, SegmentParams,
+-                     TextFieldParams, ProgressParams, MeterParams, ScaleParams,
+-                     bool>
++                     ButtonParams, DropdownParams, SpinButtonParams,
++                     SegmentParams, TextFieldParams, ProgressParams,
++                     MeterParams, ScaleParams, bool>
+         mVariant;
+ 
+     enum Widget mWidget;
+@@ -321,6 +341,12 @@ class nsNativeThemeCocoa : public mozilla::widget::ThemeCocoa {
+                   const ButtonParams& aParams);
+   void DrawDropdown(CGContextRef context, const HIRect& inBoxRect,
+                     const DropdownParams& aParams);
++  HIThemeButtonDrawInfo SpinButtonDrawInfo(ThemeButtonKind aKind,
++                                           const SpinButtonParams& aParams);
++  void DrawSpinButtons(CGContextRef context, const HIRect& inBoxRect,
++                       const SpinButtonParams& aParams);
++  void DrawSpinButton(CGContextRef context, const HIRect& inBoxRect,
++                      SpinButton aDrawnButton, const SpinButtonParams& aParams);
+   void DrawToolbar(CGContextRef cgContext, const CGRect& inBoxRect,
+                    bool aIsMain);
+   void DrawStatusBar(CGContextRef cgContext, const HIRect& inBoxRect,
+diff --git a/widget/gtk/gtkdrawing.h b/widget/gtk/gtkdrawing.h
+index ebd538e2ed0f..0388305d3775 100644
+--- a/widget/gtk/gtkdrawing.h
++++ b/widget/gtk/gtkdrawing.h
+@@ -69,6 +69,12 @@ struct MozGtkSize {
+   }
+ };
+ 
++struct ToggleGTKMetrics {
++  bool initialized;
++  MozGtkSize minSizeWithBorder;
++  GtkBorder borderAndPadding;
++};
++
+ struct ToolbarButtonGTKMetrics {
+   MozGtkSize minSizeWithBorder{};
+   gint iconXPosition = 0;
+@@ -117,6 +123,15 @@ enum WidgetNodeType : int {
+   /* Paints a GtkButton. flags is a GtkReliefStyle. */
+   MOZ_GTK_BUTTON,
+ 
++  /* Paints the container part of a GtkCheckButton. */
++  MOZ_GTK_CHECKBUTTON_CONTAINER,
++  /* Paints a GtkCheckButton. flags is a boolean, 1=checked, 0=not checked. */
++  MOZ_GTK_CHECKBUTTON,
++
++  /* Paints the container part of a GtkRadioButton. */
++  MOZ_GTK_RADIOBUTTON_CONTAINER,
++  /* Paints a GtkRadioButton. flags is a boolean, 1=checked, 0=not checked. */
++  MOZ_GTK_RADIOBUTTON,
+   /* Vertical GtkScrollbar counterparts */
+   MOZ_GTK_SCROLLBAR_VERTICAL,
+   MOZ_GTK_SCROLLBAR_CONTENTS_VERTICAL,
+@@ -134,6 +149,12 @@ enum WidgetNodeType : int {
+   MOZ_GTK_SCROLLBAR_TROUGH_VERTICAL,
+   MOZ_GTK_SCROLLBAR_THUMB_VERTICAL,
+ 
++  /* Paints a GtkSpinButton */
++  MOZ_GTK_INNER_SPIN_BUTTON,
++  MOZ_GTK_SPINBUTTON,
++  MOZ_GTK_SPINBUTTON_UP,
++  MOZ_GTK_SPINBUTTON_DOWN,
++  MOZ_GTK_SPINBUTTON_ENTRY,
+   /* Paints a GtkExpander. */
+   MOZ_GTK_EXPANDER,
+   /* Paints a GtkTextView or gets the style context corresponding to the
+@@ -183,6 +204,8 @@ enum WidgetNodeType : int {
+   MOZ_GTK_TAB_BOTTOM,
+   /* Paints the background and border of a GtkNotebook. */
+   MOZ_GTK_TABPANELS,
++  /* Paints a GtkArrow for a GtkNotebook. flags is a GtkArrowType. */
++  MOZ_GTK_TAB_SCROLLARROW,
+   /* Paints the expander and border of a GtkTreeView */
+   MOZ_GTK_TREEVIEW,
+   /* Paints treeheader cells */
+@@ -335,6 +358,34 @@ gint moz_gtk_get_tab_border(gint* left, gint* top, gint* right, gint* bottom,
+                             GtkTextDirection direction, GtkTabFlags flags,
+                             WidgetNodeType widget);
+ 
++/**
++ * Get the desired size of a GtkCheckButton
++ * indicator_size:     [OUT] the indicator size
++ * indicator_spacing:  [OUT] the spacing between the indicator and its
++ *                     container
++ *
++ * returns:    MOZ_GTK_SUCCESS if there was no error, an error code otherwise
++ */
++gint moz_gtk_checkbox_get_metrics(gint* indicator_size,
++                                  gint* indicator_spacing);
++
++/**
++ * Get metrics of the toggle (radio or checkbox)
++ * isRadio:            [IN] true when requesting metrics for the radio button
++ * returns:    pointer to ToggleGTKMetrics struct
++ */
++const ToggleGTKMetrics* GetToggleMetrics(WidgetNodeType aWidgetType);
++
++/**
++ * Get the desired size of a GtkRadioButton
++ * indicator_size:     [OUT] the indicator size
++ * indicator_spacing:  [OUT] the spacing between the indicator and its
++ *                     container
++ *
++ * returns:    MOZ_GTK_SUCCESS if there was no error, an error code otherwise
++ */
++gint moz_gtk_radio_get_metrics(gint* indicator_size, gint* indicator_spacing);
++
+ /**
+  * Some GTK themes draw their indication for the default button outside
+  * the button (e.g. the glow in New Wave). This gets the extra space necessary.
+diff --git a/widget/gtk/nsNativeThemeGTK.cpp b/widget/gtk/nsNativeThemeGTK.cpp
+index 3a64231f94d2..45439292a1e4 100644
+--- a/widget/gtk/nsNativeThemeGTK.cpp
++++ b/widget/gtk/nsNativeThemeGTK.cpp
+@@ -202,6 +202,12 @@ bool nsNativeThemeGTK::GetGtkWidgetAndState(StyleAppearance aAppearance,
+       // actually has element focus, so we check the focused attribute
+       // to see whether to draw in the focused state.
+       aState->focused = elementState.HasState(ElementState::FOCUSRING);
++      if (aAppearance == StyleAppearance::Radio ||
++          aAppearance == StyleAppearance::Checkbox) {
++        // In XUL, checkboxes and radios shouldn't have focus rings, their
++        // labels do
++        aState->focused = FALSE;
++      }
+     }
+ 
+     if (aAppearance == StyleAppearance::MozWindowTitlebar ||
+@@ -239,6 +245,32 @@ bool nsNativeThemeGTK::GetGtkWidgetAndState(StyleAppearance aAppearance,
+   }
+ 
+   switch (aAppearance) {
++    case StyleAppearance::Checkbox:
++      aGtkWidgetType = MOZ_GTK_CHECKBUTTON;
++      break;
++    case StyleAppearance::Radio:
++      aGtkWidgetType = MOZ_GTK_RADIOBUTTON;
++      break;
++    case StyleAppearance::Spinner:
++      aGtkWidgetType = MOZ_GTK_SPINBUTTON;
++      break;
++    case StyleAppearance::SpinnerUpbutton:
++      aGtkWidgetType = MOZ_GTK_SPINBUTTON_UP;
++      break;
++    case StyleAppearance::SpinnerDownbutton:
++      aGtkWidgetType = MOZ_GTK_SPINBUTTON_DOWN;
++      break;
++    case StyleAppearance::SpinnerTextfield:
++      aGtkWidgetType = MOZ_GTK_SPINBUTTON_ENTRY;
++      break;
++    case StyleAppearance::TabScrollArrowBack:
++    case StyleAppearance::TabScrollArrowForward:
++      if (aWidgetFlags)
++        *aWidgetFlags = aAppearance == StyleAppearance::TabScrollArrowBack
++                            ? GTK_ARROW_LEFT
++                            : GTK_ARROW_RIGHT;
++      aGtkWidgetType = MOZ_GTK_TAB_SCROLLARROW;
++      break;
+     case StyleAppearance::Tabpanels:
+       aGtkWidgetType = MOZ_GTK_TABPANELS;
+       break;
+@@ -877,6 +909,13 @@ bool nsNativeThemeGTK::GetWidgetPadding(nsDeviceContext* aContext,
+   }
+   switch (aAppearance) {
+     case StyleAppearance::Toolbarbutton:
++    case StyleAppearance::TabScrollArrowBack:
++    case StyleAppearance::TabScrollArrowForward:
++    // Radios and checkboxes return a fixed size in GetMinimumWidgetSize
++    // and have a meaningful baseline, so they can't have
++    // author-specified padding.
++    case StyleAppearance::Checkbox:
++    case StyleAppearance::Radio:
+       aResult->SizeTo(0, 0, 0, 0);
+       return true;
+     default:
+@@ -908,9 +947,8 @@ bool nsNativeThemeGTK::GetWidgetOverflow(nsDeviceContext* aContext,
+   return false;
+ }
+ 
+-auto nsNativeThemeGTK::IsWidgetNonNative(nsIFrame* aFrame,
+-                                         StyleAppearance aAppearance)
+-    -> NonNative {
++auto nsNativeThemeGTK::IsWidgetNonNative(
++    nsIFrame* aFrame, StyleAppearance aAppearance) -> NonNative {
+   if (IsWidgetAlwaysNonNative(aFrame, aAppearance)) {
+     return NonNative::Always;
+   }
+@@ -948,8 +986,6 @@ auto nsNativeThemeGTK::IsWidgetNonNative(nsIFrame* aFrame,
+          aAppearance == StyleAppearance::NumberInput ||
+          aAppearance == StyleAppearance::PasswordInput ||
+          aAppearance == StyleAppearance::Textarea ||
+-         aAppearance == StyleAppearance::Checkbox ||
+-         aAppearance == StyleAppearance::Radio ||
+          aAppearance == StyleAppearance::Button ||
+          aAppearance == StyleAppearance::Toolbarbutton ||
+          aAppearance == StyleAppearance::Listbox ||
+@@ -978,7 +1014,38 @@ LayoutDeviceIntSize nsNativeThemeGTK::GetMinimumWidgetSize(
+   if (IsWidgetAlwaysNonNative(aFrame, aAppearance)) {
+     return Theme::GetMinimumWidgetSize(aPresContext, aFrame, aAppearance);
+   }
+-  return {};
++
++  CSSIntSize result;
++  switch (aAppearance) {
++    case StyleAppearance::TabScrollArrowBack:
++    case StyleAppearance::TabScrollArrowForward: {
++      moz_gtk_get_tab_scroll_arrow_size(&result.width, &result.height);
++    } break;
++    case StyleAppearance::Checkbox:
++    case StyleAppearance::Radio: {
++      const ToggleGTKMetrics* metrics = GetToggleMetrics(
++          aAppearance == StyleAppearance::Radio ? MOZ_GTK_RADIOBUTTON
++                                                : MOZ_GTK_CHECKBUTTON);
++      result.width = metrics->minSizeWithBorder.width;
++      result.height = metrics->minSizeWithBorder.height;
++    } break;
++    case StyleAppearance::Spinner:
++      // hard code these sizes
++      result.width = 14;
++      result.height = 26;
++      break;
++    case StyleAppearance::SpinnerUpbutton:
++    case StyleAppearance::SpinnerDownbutton:
++      // hard code these sizes
++      result.width = 14;
++      result.height = 13;
++      break;
++    default:
++      break;
++  }
++
++  return LayoutDeviceIntSize::Round(CSSSize(result) *
++                                    GetWidgetScaleFactor(aFrame));
+ }
+ 
+ bool nsNativeThemeGTK::WidgetAttributeChangeRequiresRepaint(
+@@ -1123,6 +1184,14 @@ nsNativeThemeGTK::ThemeSupportsWidget(nsPresContext* aPresContext,
+     case StyleAppearance::Tab:
+     // case StyleAppearance::Tabpanel:
+     case StyleAppearance::Tabpanels:
++    case StyleAppearance::Radio:
++    case StyleAppearance::Checkbox:
++    case StyleAppearance::TabScrollArrowBack:
++    case StyleAppearance::TabScrollArrowForward:
++    case StyleAppearance::Spinner:
++    case StyleAppearance::SpinnerUpbutton:
++    case StyleAppearance::SpinnerDownbutton:
++    case StyleAppearance::SpinnerTextfield:
+     case StyleAppearance::MozWindowTitlebar:
+     case StyleAppearance::MozWindowTitlebarMaximized:
+     case StyleAppearance::MozWindowDecorations:
+@@ -1149,6 +1216,12 @@ nsNativeThemeGTK::ThemeSupportsWidget(nsPresContext* aPresContext,
+ NS_IMETHODIMP_(bool)
+ nsNativeThemeGTK::WidgetIsContainer(StyleAppearance aAppearance) {
+   // XXXdwh At some point flesh all of this out.
++  if (aAppearance == StyleAppearance::Radio ||
++      aAppearance == StyleAppearance::Checkbox ||
++      aAppearance == StyleAppearance::TabScrollArrowBack ||
++      aAppearance == StyleAppearance::TabScrollArrowForward) {
++    return false;
++  }
+   return true;
+ }
+ 
+@@ -1164,6 +1235,15 @@ bool nsNativeThemeGTK::ThemeDrawsFocusForWidget(nsIFrame* aFrame,
+   if (IsWidgetNonNative(aFrame, aAppearance) != NonNative::No) {
+     return Theme::ThemeDrawsFocusForWidget(aFrame, aAppearance);
+   }
++  switch (aAppearance) {
++    case StyleAppearance::Checkbox:
++    case StyleAppearance::Radio:
++      // These are drawn only for non-XUL elements, but in XUL the label has
++      // the focus ring.
++      return true;
++    default:
++      return false;
++  }
+   return false;
+ }
+ 
+diff --git a/widget/nsNativeTheme.cpp b/widget/nsNativeTheme.cpp
+index a2fa0d883f01..60e94b35d343 100644
+--- a/widget/nsNativeTheme.cpp
++++ b/widget/nsNativeTheme.cpp
+@@ -581,7 +581,5 @@ bool nsNativeTheme::IsWidgetAlwaysNonNative(nsIFrame* aFrame,
+                                             StyleAppearance aAppearance) {
+   return IsWidgetScrollbarPart(aAppearance) ||
+          aAppearance == StyleAppearance::FocusOutline ||
+-         aAppearance == StyleAppearance::SpinnerUpbutton ||
+-         aAppearance == StyleAppearance::SpinnerDownbutton ||
+          (aFrame && aFrame->StyleUI()->mMozTheme == StyleMozTheme::NonNative);
+ }
+diff --git a/widget/windows/nsNativeThemeWin.cpp b/widget/windows/nsNativeThemeWin.cpp
+index bdfc5809a433..fb4ef0142a39 100644
+--- a/widget/windows/nsNativeThemeWin.cpp
++++ b/widget/windows/nsNativeThemeWin.cpp
+@@ -65,11 +65,13 @@ bool nsNativeThemeWin::IsWidgetAlwaysNonNative(nsIFrame* aFrame,
+   return Theme::IsWidgetAlwaysNonNative(aFrame, aAppearance) ||
+          aAppearance == StyleAppearance::Checkbox ||
+          aAppearance == StyleAppearance::Radio ||
+-         aAppearance == StyleAppearance::MozMenulistArrowButton;
++         aAppearance == StyleAppearance::MozMenulistArrowButton ||
++         aAppearance == StyleAppearance::SpinnerUpbutton ||
++         aAppearance == StyleAppearance::SpinnerDownbutton;
+ }
+ 
+-auto nsNativeThemeWin::IsWidgetNonNative(
+-    nsIFrame* aFrame, StyleAppearance aAppearance) -> NonNative {
++auto nsNativeThemeWin::IsWidgetNonNative(
++    nsIFrame* aFrame, StyleAppearance aAppearance) -> NonNative {
+   if (IsWidgetAlwaysNonNative(aFrame, aAppearance)) {
+     return NonNative::Always;
+   }
