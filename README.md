@@ -7,7 +7,7 @@ Firefox 115 is the last version to support Windows 7. This repository includes p
 
 ## Platform Support
 
-Windows 7, 8, 10, 11 with [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170).
+Windows Vista SP2, 7, 8, 10, 11 with [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170).
 
 ![](imgs/snapshot.png)
 
@@ -45,6 +45,12 @@ Windows 7, 8, 10, 11 with [Microsoft Visual C++ Redistributable](https://learn.m
      git apply --verbose --ignore-space-change Rust<rust_version>win7.diff
      ```
 
+   - If you want to support Windows Vista, you also need to apply Rust<rust_version>vista.diff:
+
+     ```bat
+     git apply --verbose --ignore-space-change Rust<rust_version>vista.diff
+     ```
+
    - Build
 
      ```bat
@@ -79,6 +85,7 @@ Windows 7, 8, 10, 11 with [Microsoft Visual C++ Redistributable](https://learn.m
 
      ```bash
      ac_add_options MOZ_TELEMETRY_REPORTING=1
+     ac_add_options --disable-sandbox
      ac_add_options --target=i686-pc-windows-msvc
      ac_add_options --enable-optimize
      ac_add_options --disable-tests
