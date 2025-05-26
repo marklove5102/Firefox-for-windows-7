@@ -1,0 +1,1 @@
+Bug 1620998 - Shared code for the out-of-process crash generation logic r=afranchuk    2025-04-19 00:37:05    7f6d0ba832022ef0f416b7de09745ca17d618b49

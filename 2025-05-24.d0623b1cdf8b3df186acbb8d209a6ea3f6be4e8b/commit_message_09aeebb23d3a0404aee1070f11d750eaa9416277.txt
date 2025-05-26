@@ -1,0 +1,1 @@
+Bug 1955591 - Make LookAndFeel APIs safe to call off the main thread. r=jfkthame    2025-03-22 11:24:00    09aeebb23d3a0404aee1070f11d750eaa9416277

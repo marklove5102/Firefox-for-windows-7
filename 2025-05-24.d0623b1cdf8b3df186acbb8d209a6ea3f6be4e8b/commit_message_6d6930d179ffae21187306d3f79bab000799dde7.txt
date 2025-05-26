@@ -1,0 +1,1 @@
+Bug 1891120 - Remove GetWindowInfo hook. r=win-reviewers,rkraesig    2024-04-18 10:07:00    6d6930d179ffae21187306d3f79bab000799dde7
