@@ -376,44 +376,76 @@ index bf26e3434750..7ed517236463 100644
 --- a/widget/windows/nsLookAndFeel.cpp
 +++ b/widget/windows/nsLookAndFeel.cpp
 @@ -116,7 +116,7 @@ void nsLookAndFeel::RefreshImpl() {
-   EnsureInit();
- 
-   auto UseNonNativeMenuColors = [&]() -> bool {
--    return !mHighContrastOn || aScheme == ColorScheme::Dark;
-+  return LookAndFeel::GetInt(LookAndFeel::IntID::WindowsDefaultTheme) || aScheme == ColorScheme::Dark;
-   };
- 
-   auto IsHighlightColor = [&] {
-@@ -303,6 +303,7 @@ void nsLookAndFeel::RefreshImpl() {
-   return L"";
  }
  
-+bool nsLookAndFeel::sIsDefaultWindowsTheme = false;
- HANDLE nsLookAndFeel::GetTheme(UXThemeClass aClass) {
-   auto& handle =
-       static_cast<nsLookAndFeel*>(GetInstance())->mThemeHandles[aClass];
+ static bool UseNonNativeMenuColors(ColorScheme aScheme) {
+-  return !nsUXThemeData::IsHighContrastOn() || aScheme == ColorScheme::Dark;
++  return LookAndFeel::GetInt(LookAndFeel::IntID::WindowsDefaultTheme) || aScheme == ColorScheme::Dark;
+ }
+ 
+ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
 @@ -483,6 +483,9 @@ nsresult nsLookAndFeel::NativeGetInt(IntID aID, int32_t& aResult) {
      case IntID::TreeScrollLinesMax:
        aResult = 3;
        break;
 +    case IntID::WindowsDefaultTheme:
-+      aResult = sIsDefaultWindowsTheme;
++      aResult = nsUXThemeData::IsDefaultWindowTheme();
 +      break;
      case IntID::WindowsAccentColorInTitlebar:
        aResult = mTitlebarColors.mUseAccent;
        break;
-diff --git a/widget/windows/nsLookAndFeel.h b/widget/windows/nsLookAndFeel.h
-index ab25200046df..5626e6efd50a 100644
---- a/widget/windows/nsLookAndFeel.h
-+++ b/widget/windows/nsLookAndFeel.h
-@@ -125,6 +162,7 @@ class nsLookAndFeel final : public nsXPLookAndFeel {
-   nscolor mColorAccentText = 0;
+diff --git a/widget/windows/nsUXThemeData.cpp b/widget/windows/nsUXThemeData.cpp
+index bc4681494654..b984689300b7 100644
+--- a/widget/windows/nsUXThemeData.cpp
++++ b/widget/windows/nsUXThemeData.cpp
+@@ -97,14 +97,22 @@ const wchar_t* nsUXThemeData::GetClassName(nsUXThemeClass cls) {
+       return L"";
+   }
+ }
+-
++bool nsUXThemeData::sIsDefaultWindowsTheme = false;
+ bool nsUXThemeData::sIsHighContrastOn = false;
  
-   nscolor mSysColorTable[SYS_COLOR_COUNT]{0};
++// static
++bool nsUXThemeData::IsDefaultWindowTheme() { return sIsDefaultWindowsTheme; }
++
++bool nsUXThemeData::IsHighContrastOn() { return sIsHighContrastOn; }
++
+ // static
+ void nsUXThemeData::UpdateNativeThemeInfo() {
+   HIGHCONTRAST highContrastInfo;
+   highContrastInfo.cbSize = sizeof(HIGHCONTRAST);
+-  sIsHighContrastOn =
+-      SystemParametersInfo(SPI_GETHIGHCONTRAST, 0, &highContrastInfo, 0) &&
+-      highContrastInfo.dwFlags & HCF_HIGHCONTRASTON;
++  if (SystemParametersInfo(SPI_GETHIGHCONTRAST, 0, &highContrastInfo, 0)) {
++    sIsHighContrastOn = highContrastInfo.dwFlags & HCF_HIGHCONTRASTON;
++  } else {
++    sIsHighContrastOn = false;
++  }
++  sIsDefaultWindowsTheme = !sIsHighContrastOn;
+ }
+diff --git a/widget/windows/nsUXThemeData.h b/widget/windows/nsUXThemeData.h
+index ffaea35457d1..8a308f341c1f 100644
+--- a/widget/windows/nsUXThemeData.h
++++ b/widget/windows/nsUXThemeData.h
+@@ -63,6 +63,7 @@ class nsUXThemeData {
+   static const wchar_t* GetClassName(nsUXThemeClass);
+ 
+  public:
 +  static bool sIsDefaultWindowsTheme;
-   bool mHighContrastOn = false;
+   static bool sIsHighContrastOn;
  
-   mozilla::EnumeratedArray<UXThemeClass, UXThemeHandle,
+   static void Invalidate();
+@@ -70,6 +71,7 @@ class nsUXThemeData {
+   static HMODULE GetThemeDLL();
+ 
+   static void UpdateNativeThemeInfo();
+-  static bool IsHighContrastOn() { return sIsHighContrastOn; }
++  static bool IsDefaultWindowTheme();
++  static bool IsHighContrastOn();
+ };
+ #endif  // __UXThemeData_h__
 diff --git a/xpcom/ds/StaticAtoms.py b/xpcom/ds/StaticAtoms.py
 index bf0ca61b3ffd..e114c7ce95ba 100644
 --- a/xpcom/ds/StaticAtoms.py

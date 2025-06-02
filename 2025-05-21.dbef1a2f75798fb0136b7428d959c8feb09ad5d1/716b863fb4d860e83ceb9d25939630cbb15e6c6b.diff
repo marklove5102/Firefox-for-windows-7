@@ -115,13 +115,13 @@ index 7ef968baf6fa..04883a833fc3 100644
 @@ -484,6 +484,9 @@ mozilla::Maybe<nsUXThemeClass> nsNativeThemeWin::GetThemeClass(
      case StyleAppearance::Textfield:
      case StyleAppearance::Textarea:
-       return Some(UXThemeClass::Edit);
+       return Some(eUXEdit);
 +    case StyleAppearance::Toolbox:
-+      return Some(UXThemeClass::Rebar);
++      return Some(eUXRebar);
 +    case StyleAppearance::Toolbar:
      case StyleAppearance::Toolbarbutton:
      case StyleAppearance::Separator:
-       return Some(UXThemeClass::Toolbar);
+       return Some(eUXToolbar);
 @@ -716,6 +719,27 @@ nsresult nsNativeThemeWin::GetThemePartAndState(nsIFrame* aFrame,
        }
        return NS_OK;
@@ -210,28 +210,28 @@ index 7ef968baf6fa..04883a833fc3 100644
        aAppearance == StyleAppearance::ProgressBar ||
        aAppearance == StyleAppearance::Tabpanels ||
        aAppearance == StyleAppearance::Separator) {
-diff --git a/widget/windows/nsLookAndFeel.cpp b/widget/windows/nsLookAndFeel.cpp
+diff --git a/widget/windows/nsUXThemeData.cpp b/widget/windows/nsUXThemeData.cpp
 index ce8b0f347996..b3f9e6fce90b 100644
---- a/widget/windows/nsLookAndFeel.cpp
-+++ b/widget/windows/nsLookAndFeel.cpp
+--- a/widget/windows/nsUXThemeData.cpp
++++ b/widget/windows/nsUXThemeData.cpp
 @@ -62,6 +62,8 @@ const wchar_t* nsUXThemeData::GetClassName(nsUXThemeClass cls) {
        return L"Button";
-     case UXThemeClass::Edit:
+     case eUXEdit:
        return L"Edit";
-+    case UXThemeClass::Rebar:
++    case eUXRebar:
 +      return L"Rebar";
-     case UXThemeClass::Toolbar:
+     case eUXToolbar:
        return L"Toolbar";
-     case UXThemeClass::Progress:
-diff --git a/widget/windows/nsLookAndFeel.h b/widget/windows/nsLookAndFeel.h
+     case eUXProgress:
+diff --git a/widget/windows/nsUXThemeData.h b/widget/windows/nsUXThemeData.h
 index 24fe07d12805..38be8b448497 100644
---- a/widget/windows/nsLookAndFeel.h
-+++ b/widget/windows/nsLookAndFeel.h
+--- a/widget/windows/nsUXThemeData.h
++++ b/widget/windows/nsUXThemeData.h
 @@ -19,6 +19,7 @@
- enum class UXThemeClass : uint8_t {
-   Button = 0,
-   Edit,
-+  Rebar,
-   Toolbar,
-   Progress,
-   Tab,
+ enum nsUXThemeClass {
+   eUXButton = 0,
+   eUXEdit,
++  eUXRebar,
+   eUXToolbar,
+   eUXProgress,
+   eUXTab,

@@ -336,10 +336,10 @@ index 00ab165d519d..197fbe693bd2 100644
              c.path().get(), nullptr, IID_IShellItem, getter_AddRefs(folder)))) {
        return dialog->SetFolder(folder);
      }
-diff --git a/widget/windows/nsLookAndFeel.cpp b/widget/windows/nsLookAndFeel.cpp
+diff --git a/widget/windows/nsUXThemeData.cpp b/widget/windows/nsUXThemeData.cpp
 index 861ba632e79d..ddee1788e8f6 100644
---- a/widget/windows/nsLookAndFeel.cpp
-+++ b/widget/windows/nsLookAndFeel.cpp
+--- a/widget/windows/nsUXThemeData.cpp
++++ b/widget/windows/nsUXThemeData.cpp
 @@ -194,7 +194,7 @@ void nsUXThemeData::UpdateTitlebarInfo(HWND aWnd) {
    if (!sTitlebarInfoPopulatedAero &&
        gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) {

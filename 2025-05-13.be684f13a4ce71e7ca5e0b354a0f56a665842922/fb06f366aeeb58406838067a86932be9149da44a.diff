@@ -1026,16 +1026,16 @@ index b988fb4ec58a..d766e2550676 100644
 --- a/widget/windows/nsNativeThemeWin.cpp
 +++ b/widget/windows/nsNativeThemeWin.cpp
 @@ -501,7 +501,12 @@ mozilla::Maybe<nsUXThemeClass> nsNativeThemeWin::GetThemeClass(
-       return Some(UXThemeClass::Trackbar);
+       return Some(eUXTrackbar);
      case StyleAppearance::Menulist:
-       return Some(UXThemeClass::Combobox);
+       return Some(eUXCombobox);
 +    case StyleAppearance::Treeheadercell:
-+      return Some(UXThemeClass::Header);
++      return Some(eUXHeader);
      case StyleAppearance::Listbox:
 +    case StyleAppearance::Treeview:
 +    case StyleAppearance::Treetwistyopen:
 +    case StyleAppearance::Treeitem:
-       return Some(UXThemeClass::Listview);
+       return Some(eUXListview);
      default:
        return Nothing();
 @@ -713,6 +718,7 @@ nsresult nsNativeThemeWin::GetThemePartAndState(nsIFrame* aFrame,
@@ -1120,31 +1120,31 @@ index b988fb4ec58a..d766e2550676 100644
      // Draw 3D face background controls
      case StyleAppearance::ProgressBar:
        // Draw 3D border
-diff --git a/widget/windows/nsLookAndFeel.cpp b/widget/windows/nsLookAndFeel.cpp
+diff --git a/widget/windows/nsUXThemeData.cpp b/widget/windows/nsUXThemeData.cpp
 index 88546b01c6f0..ce8b0f347996 100644
---- a/widget/windows/nsLookAndFeel.cpp
-+++ b/widget/windows/nsLookAndFeel.cpp
+--- a/widget/windows/nsUXThemeData.cpp
++++ b/widget/windows/nsUXThemeData.cpp
 @@ -72,6 +72,8 @@ const wchar_t* nsUXThemeData::GetClassName(nsUXThemeClass cls) {
        return L"Trackbar";
-     case UXThemeClass::Combobox:
+     case eUXCombobox:
        return L"Combobox";
-+    case UXThemeClass::Header:
++    case eUXHeader:
 +      return L"Header";
-     case UXThemeClass::Listview:
+     case eUXListview:
        return L"Listview";
-     case UXThemeClass::Menu:
-diff --git a/widget/windows/nsLookAndFeel.h b/widget/windows/nsLookAndFeel.h
+     case eUXMenu:
+diff --git a/widget/windows/nsUXThemeData.h b/widget/windows/nsUXThemeData.h
 index b59c2aae045e..24fe07d12805 100644
---- a/widget/windows/nsLookAndFeel.h
-+++ b/widget/windows/nsLookAndFeel.h
+--- a/widget/windows/nsUXThemeData.h
++++ b/widget/windows/nsUXThemeData.h
 @@ -24,6 +24,7 @@ enum nsUXThemeClass {
-   Tab,
-   Trackbar,
-   Combobox,
-+  Header,
-   Listview,
-   Menu,
-   NumClasses
+   eUXTab,
+   eUXTrackbar,
+   eUXCombobox,
++  eUXHeader,
+   eUXListview,
+   eUXMenu,
+   eUXNumClasses
 diff --git a/xpcom/ds/StaticAtoms.py b/xpcom/ds/StaticAtoms.py
 index f3d054af846c..ddcf19de27b7 100644
 --- a/xpcom/ds/StaticAtoms.py

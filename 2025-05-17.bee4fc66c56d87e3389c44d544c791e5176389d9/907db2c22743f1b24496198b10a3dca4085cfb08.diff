@@ -92,5 +92,5 @@ index 7ea7c9399346..d85b5e8a4d47 100644
 +      idx = COLOR_3DDKSHADOW;
 +      break;
      case ColorID::Visitedtext: {
-       if (mHighContrastOn) {
+       if (nsUXThemeData::IsHighContrastOn()) {
          // The fallback visited link color on HCM (given there's no

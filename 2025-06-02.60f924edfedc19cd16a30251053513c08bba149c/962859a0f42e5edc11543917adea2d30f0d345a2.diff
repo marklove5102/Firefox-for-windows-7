@@ -1,0 +1,43 @@
+diff --git a/gfx/config/gfxConfigManager.cpp b/gfx/config/gfxConfigManager.cpp
+index bbf909507d24..6ae75c03d9e5 100644
+--- a/gfx/config/gfxConfigManager.cpp
++++ b/gfx/config/gfxConfigManager.cpp
+@@ -266,6 +266,22 @@ void gfxConfigManager::ConfigureWebRender() {
+     }
+   }
+ 
++  if (!mIsWin11OrLater) {
++    // Disable DirectComposition for NVIDIA users on Windows 10 with high/mixed
++    // refresh rate monitors due to rendering artifacts. (See bug 1638709.)
++    nsAutoString adapterVendorID;
++    mGfxInfo->GetAdapterVendorID(adapterVendorID);
++    if (adapterVendorID == u"0x10de") {
++      bool mixed = false;
++      int32_t maxRefreshRate = mGfxInfo->GetMaxRefreshRate(&mixed);
++      if (maxRefreshRate > 60 && mixed) {
++        mFeatureWrDComp->Disable(FeatureStatus::Blocked,
++                                 "Monitor refresh rate too high/mixed",
++                                 "NVIDIA_REFRESH_RATE_MIXED"_ns);
++      }
++    }
++  }
++
+   mFeatureWrDComp->MaybeSetFailed(
+       mFeatureWr->IsEnabled(), FeatureStatus::Unavailable, "Requires WebRender",
+       "FEATURE_FAILURE_DCOMP_NOT_WR"_ns);
+diff --git a/gfx/tests/gtest/TestConfigManager.cpp b/gfx/tests/gtest/TestConfigManager.cpp
+index 23cacdf844ca..cb4e1c7b2970 100644
+--- a/gfx/tests/gtest/TestConfigManager.cpp
++++ b/gfx/tests/gtest/TestConfigManager.cpp
+@@ -665,9 +665,9 @@ TEST_F(GfxConfigManager, WebRenderNvidiaHighMixedRefreshRateWin10) {
+   ConfigureWebRender();
+ 
+   EXPECT_TRUE(mFeatures.mWr.IsEnabled());
+-  EXPECT_TRUE(mFeatures.mWrCompositor.IsEnabled());
++  EXPECT_FALSE(mFeatures.mWrCompositor.IsEnabled());
+   EXPECT_TRUE(mFeatures.mWrAngle.IsEnabled());
+-  EXPECT_TRUE(mFeatures.mWrDComp.IsEnabled());
++  EXPECT_FALSE(mFeatures.mWrDComp.IsEnabled());
+   EXPECT_TRUE(mFeatures.mWrPartial.IsEnabled());
+   EXPECT_TRUE(mFeatures.mWrShaderCache.IsEnabled());
+   EXPECT_TRUE(mFeatures.mWrOptimizedShaders.IsEnabled());

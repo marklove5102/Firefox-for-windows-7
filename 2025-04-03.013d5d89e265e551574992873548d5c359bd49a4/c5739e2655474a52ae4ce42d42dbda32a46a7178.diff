@@ -3446,18 +3446,17 @@ index 7ed517236463..7ea7c9399346 100644
  #include "mozilla/widget/WinRegistry.h"
  
  #define AVG2(a, b) (((a) + (b) + 1) >> 1)
-@@ -38,6 +39,11 @@ static int32_t GetSystemParam(long flag, int32_t def) {
-       aResult = GetTooltipOffsetVertical();
-       break;
-     case IntID::SystemUsesDarkTheme: {
+@@ -38,6 +39,10 @@ static int32_t GetSystemParam(long flag, int32_t def) {
+ }
+ 
+ static bool SystemWantsDarkTheme() {
 +  if (!IsWin10OrLater()) {
-+    aResult = false;
-+      break;
++    return false;
 +  }
 +
-       if (mHighContrastOn) {
-         aResult =
-             LookAndFeel::IsDarkColor(GetColorForSysColorIndex(COLOR_WINDOW));
+   if (nsUXThemeData::IsHighContrastOn()) {
+     return LookAndFeel::IsDarkColor(
+         LookAndFeel::Color(StyleSystemColor::Window, ColorScheme::Light,
 diff --git a/widget/windows/nsNativeThemeWin.cpp b/widget/windows/nsNativeThemeWin.cpp
 index 19fe2772351a..550b186238ea 100644
 --- a/widget/windows/nsNativeThemeWin.cpp
@@ -3474,9 +3473,9 @@ index 19fe2772351a..550b186238ea 100644
  
  static bool AssumeThemePartAndStateAreTransparent(int32_t aPart,
                                                    int32_t aState) {
--  if (!LookAndFeel::GetInt(LookAndFeel::IntID::UseAccessibilityTheme) &&
--      aPart == MENU_POPUPITEM && aState == MBI_NORMAL) {
-+  if (!(IsWin8Point1OrLater() && LookAndFeel::GetInt(LookAndFeel::IntID::UseAccessibilityTheme)) &&
+-  if (!nsUXThemeData::IsHighContrastOn() && aPart == MENU_POPUPITEM &&
+-      aState == MBI_NORMAL) {
++  if (!(IsWin8Point1OrLater() && nsUXThemeData::IsHighContrastOn()) &&
 +      aPart == MENU_POPUPITEM && aState == MBI_NORMAL) {
      return true;
    }
@@ -3581,8 +3580,8 @@ index df305bd8d5ef..fff0e67cc8da 100644
      HRESULT hr = ::CoCreateInstance(
          CLSID_VirtualDesktopManager, NULL, CLSCTX_INPROC_SERVER,
 @@ -730,6 +767,9 @@ nsWindow::nsWindow(bool aIsChildWindow)
-     NS_ASSERTION(sIsOleInitialized, "***** OLE is not initialized!\n");
-     MouseScrollHandler::Initialize();
+     // Init theme data
+     nsUXThemeData::UpdateNativeThemeInfo();
      RedirectedKeyDownMessageManager::Forget();
 +    if (mPointerEvents.ShouldEnableInkCollector()) {
 +      InkCollector::sInkCollector = new InkCollector();

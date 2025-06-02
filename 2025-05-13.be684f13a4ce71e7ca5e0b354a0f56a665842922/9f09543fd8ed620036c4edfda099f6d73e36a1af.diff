@@ -411,7 +411,7 @@ diff --git a/widget/windows/nsNativeThemeWin.cpp b/widget/windows/nsNativeThemeW
 index bdfc5809a433..fb4ef0142a39 100644
 --- a/widget/windows/nsNativeThemeWin.cpp
 +++ b/widget/windows/nsNativeThemeWin.cpp
-@@ -65,11 +65,13 @@ bool nsNativeThemeWin::IsWidgetAlwaysNonNative(nsIFrame* aFrame,
+@@ -65,12 +65,13 @@ bool nsNativeThemeWin::IsWidgetAlwaysNonNative(nsIFrame* aFrame,
    return Theme::IsWidgetAlwaysNonNative(aFrame, aAppearance) ||
           aAppearance == StyleAppearance::Checkbox ||
           aAppearance == StyleAppearance::Radio ||
@@ -421,8 +421,9 @@ index bdfc5809a433..fb4ef0142a39 100644
 +         aAppearance == StyleAppearance::SpinnerDownbutton;
  }
  
--auto nsNativeThemeWin::IsWidgetNonNative(
--    nsIFrame* aFrame, StyleAppearance aAppearance) -> NonNative {
+-auto nsNativeThemeWin::IsWidgetNonNative(nsIFrame* aFrame,
+-                                         StyleAppearance aAppearance)
+-    -> NonNative {
 +auto nsNativeThemeWin::IsWidgetNonNative(
 +    nsIFrame* aFrame, StyleAppearance aAppearance) -> NonNative {
    if (IsWidgetAlwaysNonNative(aFrame, aAppearance)) {

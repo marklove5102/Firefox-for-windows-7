@@ -11,8 +11,8 @@ index 466df9ffef9e..04a7d35863cd 100644
 -  }
 -
    LayoutDeviceIntMargin result;
-   mozilla::Maybe<UXThemeClass> themeClass = GetThemeClass(aAppearance);
-   HTHEME theme = nullptr;
+   mozilla::Maybe<nsUXThemeClass> themeClass = GetThemeClass(aAppearance);
+   HTHEME theme = NULL;
 @@ -1157,7 +1153,7 @@ bool nsNativeThemeWin::GetWidgetPadding(nsDeviceContext* aContext,
                                          nsIFrame* aFrame,
                                          StyleAppearance aAppearance,

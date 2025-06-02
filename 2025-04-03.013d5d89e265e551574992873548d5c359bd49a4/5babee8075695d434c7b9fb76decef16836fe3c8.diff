@@ -184,7 +184,7 @@ index 550b186238ea..d3f9c86d8109 100644
 @@ -531,6 +613,18 @@ mozilla::Maybe<nsUXThemeClass> nsNativeThemeWin::GetThemeClass(
      case StyleAppearance::Treetwistyopen:
      case StyleAppearance::Treeitem:
-       return Some(UXThemeClass::Listview);
+       return Some(eUXListview);
 +    case StyleAppearance::Menubar:
 +    case StyleAppearance::Menupopup:
 +    case StyleAppearance::Menuitem:
@@ -196,7 +196,7 @@ index 550b186238ea..d3f9c86d8109 100644
 +    case StyleAppearance::Menuarrow:
 +    case StyleAppearance::Menuimage:
 +    case StyleAppearance::Menuitemtext:
-+      return Some(UXThemeClass::Menu);
++      return Some(eUXMenu);
      default:
        return Nothing();
    }

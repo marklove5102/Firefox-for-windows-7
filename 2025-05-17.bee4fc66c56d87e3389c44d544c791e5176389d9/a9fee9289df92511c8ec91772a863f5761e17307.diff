@@ -1,67 +1,60 @@
-diff --git a/widget/windows/nsLookAndFeel.cpp b/widget/windows/nsLookAndFeel.cpp
-index 0ad1a645498f..861ba632e79d 100644
---- a/widget/windows/nsLookAndFeel.cpp
-+++ b/widget/windows/nsLookAndFeel.cpp
-@@ -17,6 +17,12 @@
-                     float(cursorSize) / float(kDefaultCursorSize));
- }
+diff --git a/widget/windows/nsUXThemeData.cpp b/widget/windows/nsUXThemeData.cpp
+index df359734e95b..843505fc9346 100644
+--- a/widget/windows/nsUXThemeData.cpp
++++ b/widget/windows/nsUXThemeData.cpp
+@@ -16,8 +16,14 @@
+ using namespace mozilla;
+ using namespace mozilla::widget;
  
 +const wchar_t
-+nsLookAndFeel::kThemeLibraryName[] = L"uxtheme.dll";
++nsUXThemeData::kThemeLibraryName[] = L"uxtheme.dll";
 +
+ MOZ_RUNINIT nsUXThemeData::ThemeHandle nsUXThemeData::sThemes[eUXNumClasses];
+ 
 +HMODULE
-+nsLookAndFeel::sThemeDLL = nullptr;
++nsUXThemeData::sThemeDLL = nullptr;
 +
  const int NUM_COMMAND_BUTTONS = 3;
- SIZE nsLookAndFeel::sCommandButtonMetrics[NUM_COMMAND_BUTTONS];
- bool nsLookAndFeel::sCommandButtonMetricsInitialized = false;
-@@ -80,6 +86,13 @@ nsUXThemeData::GetTheme(nsUXThemeClass cls) {
-                     {L"royale.msstyles", WindowsTheme::Royale}};
- 
+ SIZE nsUXThemeData::sCommandButtonMetrics[NUM_COMMAND_BUTTONS];
+ bool nsUXThemeData::sCommandButtonMetricsInitialized = false;
+@@ -68,6 +77,13 @@ nsUXThemeData::GetTheme(nsUXThemeClass cls) {
+   return sThemes[cls];
+ }
  
 +HMODULE
-+nsLookAndFeel::GetThemeDLL() {
++nsUXThemeData::GetThemeDLL() {
 +  if (!sThemeDLL)
 +    sThemeDLL = ::LoadLibraryW(kThemeLibraryName);
 +  return sThemeDLL;
 +}
 +
- bool nsLookAndFeel::sIsDefaultWindowsTheme = false;
- HANDLE nsLookAndFeel::GetTheme(UXThemeClass aClass) {
-   auto& handle =
-diff --git a/widget/windows/nsLookAndFeel.h b/widget/windows/nsLookAndFeel.h
-index 33ab0354b767..dba17c324ed6 100644
---- a/widget/windows/nsLookAndFeel.h
-+++ b/widget/windows/nsLookAndFeel.h
-@@ -67,6 +67,8 @@ class nsUXThemeData {
-   nsLookAndFeel();
-   virtual ~nsLookAndFeel();
+ const wchar_t* nsUXThemeData::GetClassName(nsUXThemeClass cls) {
+   switch (cls) {
+     case eUXButton:
+diff --git a/widget/windows/nsUXThemeData.h b/widget/windows/nsUXThemeData.h
+index ebb6c2fc0406..15340c79c028 100644
+--- a/widget/windows/nsUXThemeData.h
++++ b/widget/windows/nsUXThemeData.h
+@@ -79,6 +79,7 @@ enum WindowsThemeColor {
+     void Close();
+   };
  
 +  static HMODULE sThemeDLL;
-   static HANDLE GetTheme(UXThemeClass);
-+  static HMODULE GetThemeDLL();
+   static ThemeHandle sThemes[eUXNumClasses];
  
    // We initialize sCommandButtonBoxMetrics separately as a performance
-@@ -82,6 +83,7 @@ class nsUXThemeData {
- 
-   static void EnsureCommandButtonMetrics();
+@@ -94,6 +95,7 @@ class nsUXThemeData {
    static void EnsureCommandButtonBoxMetrics();
+ 
+  public:
 +  static const wchar_t kThemeLibraryName[];
    static bool sTitlebarInfoPopulatedAero;
    static bool sTitlebarInfoPopulatedThemed;
-   // nsWindow calls this to update desktop settings info
+   static bool sIsDefaultWindowsTheme;
 diff --git a/widget/windows/nsWinGesture.cpp b/widget/windows/nsWinGesture.cpp
 index 8fd00b3ff0af..d5e92c2d4fdb 100644
 --- a/widget/windows/nsWinGesture.cpp
 +++ b/widget/windows/nsWinGesture.cpp
-@@ -18,6 +18,7 @@
-  */
- 
- #include "nscore.h"
-+#include "nsLookAndFeel.h"
- #include "nsWinGesture.h"
- #include "mozilla/Logging.h"
- #include "mozilla/MouseEvents.h"
 @@ -24,6 +24,22 @@ using namespace mozilla::widget;
  
  extern mozilla::LazyLogModule gWindowsLog;
@@ -96,7 +89,7 @@ index 8fd00b3ff0af..d5e92c2d4fdb 100644
 +  }
 +
 +  sLibraryHandle = ::LoadLibraryW(kGestureLibraryName);
-+  HMODULE hTheme = nsLookAndFeel::GetThemeDLL();
++  HMODULE hTheme = nsUXThemeData::GetThemeDLL();
 +
 +  // gesture interfaces
 +  if (sLibraryHandle) {

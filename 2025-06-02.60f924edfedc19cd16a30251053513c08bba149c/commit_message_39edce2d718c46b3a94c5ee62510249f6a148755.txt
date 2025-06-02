@@ -1,0 +1,1 @@
+Bug 1698495 - Implement size-adjust font scaling in gfx/thebes font code. r=emilio    2021-03-30 05:14:44    39edce2d718c46b3a94c5ee62510249f6a148755

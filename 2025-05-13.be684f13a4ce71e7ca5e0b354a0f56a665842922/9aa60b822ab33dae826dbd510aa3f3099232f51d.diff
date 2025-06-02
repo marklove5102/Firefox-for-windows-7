@@ -733,7 +733,7 @@ index 9cbc26bf0431..0b495540c4ab 100644
 +    case StyleAppearance::MozWindowButtonBox:
 +    case StyleAppearance::MozWindowButtonBoxMaximized:
 +    case StyleAppearance::MozWinBorderlessGlass:
-       return Some(UXThemeClass::WindowFrame);
+       return Some(eUXWindowFrame);
      default:
        return Nothing();
 @@ -1296,6 +1299,12 @@ nsresult nsNativeThemeWin::GetThemePartAndState(nsIFrame* aFrame,

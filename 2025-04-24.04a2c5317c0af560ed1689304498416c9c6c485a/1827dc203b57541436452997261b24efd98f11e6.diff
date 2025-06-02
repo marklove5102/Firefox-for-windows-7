@@ -152,25 +152,6 @@ diff --git a/widget/windows/nsLookAndFeel.cpp b/widget/windows/nsLookAndFeel.cpp
 index 8671dd387a1a..bf26e3434750 100644
 --- a/widget/windows/nsLookAndFeel.cpp
 +++ b/widget/windows/nsLookAndFeel.cpp
-@@ -64,8 +64,18 @@ const wchar_t* nsUXThemeData::GetClassName(nsUXThemeClass cls) {
-       return L"Edit";
-     case UXThemeClass::Rebar:
-       return L"Rebar";
-+    case UXThemeClass::MediaRebar:
-+      return L"Media::Rebar";
-+    case UXThemeClass::CommunicationsRebar:
-+      return L"Communications::Rebar";
-+    case UXThemeClass::BrowserTabBarRebar:
-+      return L"BrowserTabBar::Rebar";
-     case UXThemeClass::Toolbar:
-       return L"Toolbar";
-+    case UXThemeClass::MediaToolbar:
-+      return L"Media::Toolbar";
-+    case UXThemeClass::CommunicationsToolbar:
-+      return L"Communications::Toolbar";
-     case UXThemeClass::Progress:
-       return L"Progress";
-     case UXThemeClass::Tab:
 @@ -160,6 +160,7 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
          return aScheme != ColorScheme::Dark || mDarkHighlightText;
        case ColorID::IMESelectedRawTextForeground:
@@ -204,12 +185,12 @@ index 8671dd387a1a..bf26e3434750 100644
      case ColorID::MozDialogtext:
 @@ -868,6 +885,10 @@ void nsLookAndFeel::EnsureInit() {
  
-   mColorMenuHoverText = ::GetColorFromTheme(UXThemeClass::Menu, MENU_POPUPITEM,
-                                             MPI_HOT, TMT_TEXTCOLOR);
+   mColorMenuHoverText =
+       ::GetColorFromTheme(eUXMenu, MENU_POPUPITEM, MPI_HOT, TMT_TEXTCOLOR);
 +  mColorMediaText =
-+      ::GetColorFromTheme(UXThemeClass::MediaToolbar, TP_BUTTON, TS_NORMAL, TMT_TEXTCOLOR);
++      ::GetColorFromTheme(eUXMediaToolbar, TP_BUTTON, TS_NORMAL, TMT_TEXTCOLOR);
 +  mColorCommunicationsText = ::GetColorFromTheme(
-+      UXThemeClass::CommunicationsToolbar, TP_BUTTON, TS_NORMAL, TMT_TEXTCOLOR);
++      eUXCommunicationsToolbar, TP_BUTTON, TS_NORMAL, TMT_TEXTCOLOR);
  
    // Fill out the sys color table.
    for (int i = SYS_COLOR_MIN; i <= SYS_COLOR_MAX; ++i) {
@@ -217,19 +198,6 @@ diff --git a/widget/windows/nsLookAndFeel.h b/widget/windows/nsLookAndFeel.h
 index 897a388964d8..4b00d0e771ae 100644
 --- a/widget/windows/nsLookAndFeel.h
 +++ b/widget/windows/nsLookAndFeel.h
-@@ -20,7 +20,12 @@ enum nsUXThemeClass {
-   Button = 0,
-   Edit,
-   Rebar,
-+  MediaRebar,
-+  CommunicationsRebar,
-+  BrowserTabBarRebar,
-   Toolbar,
-+  MediaToolbar,
-+  CommunicationsToolbar,
-   Progress,
-   Tab,
-   Trackbar,
 @@ -99,6 +99,8 @@ class nsLookAndFeel final : public nsXPLookAndFeel {
  
    // Cached colors and flags indicating success in their retrieval.
@@ -244,15 +212,15 @@ index b7206a43f6ff..19fe2772351a 100644
 --- a/widget/windows/nsNativeThemeWin.cpp
 +++ b/widget/windows/nsNativeThemeWin.cpp
 @@ -495,6 +495,12 @@ mozilla::Maybe<nsUXThemeClass> nsNativeThemeWin::GetThemeClass(
-       return Some(UXThemeClass::Edit);
+       return Some(eUXEdit);
      case StyleAppearance::Toolbox:
-       return Some(UXThemeClass::Rebar);
+       return Some(eUXRebar);
 +    case StyleAppearance::MozWinMediaToolbox:
-+      return Some(UXThemeClass::MediaRebar);
++      return Some(eUXMediaRebar);
 +    case StyleAppearance::MozWinCommunicationsToolbox:
-+      return Some(UXThemeClass::CommunicationsRebar);
++      return Some(eUXCommunicationsRebar);
 +    case StyleAppearance::MozWinBrowsertabbarToolbox:
-+      return Some(UXThemeClass::BrowserTabBarRebar);
++      return Some(eUXBrowserTabBarRebar);
      case StyleAppearance::Toolbar:
      case StyleAppearance::Toolbarbutton:
      case StyleAppearance::Separator:
@@ -298,3 +266,43 @@ index b7206a43f6ff..19fe2772351a 100644
        aAppearance == StyleAppearance::Toolbar ||
        aAppearance == StyleAppearance::Progresschunk ||
        aAppearance == StyleAppearance::ProgressBar ||
+diff --git a/widget/windows/nsUXThemeData.cpp b/widget/windows/nsUXThemeData.cpp
+index b27681115519..bc4681494654 100644
+--- a/widget/windows/nsUXThemeData.cpp
++++ b/widget/windows/nsUXThemeData.cpp
+@@ -64,8 +64,18 @@ const wchar_t* nsUXThemeData::GetClassName(nsUXThemeClass cls) {
+       return L"Edit";
+     case eUXRebar:
+       return L"Rebar";
++    case eUXMediaRebar:
++      return L"Media::Rebar";
++    case eUXCommunicationsRebar:
++      return L"Communications::Rebar";
++    case eUXBrowserTabBarRebar:
++      return L"BrowserTabBar::Rebar";
+     case eUXToolbar:
+       return L"Toolbar";
++    case eUXMediaToolbar:
++      return L"Media::Toolbar";
++    case eUXCommunicationsToolbar:
++      return L"Communications::Toolbar";
+     case eUXProgress:
+       return L"Progress";
+     case eUXTab:
+diff --git a/widget/windows/nsUXThemeData.h b/widget/windows/nsUXThemeData.h
+index cace4dd9c62b..ffaea35457d1 100644
+--- a/widget/windows/nsUXThemeData.h
++++ b/widget/windows/nsUXThemeData.h
+@@ -20,7 +20,12 @@ enum nsUXThemeClass {
+   eUXButton = 0,
+   eUXEdit,
+   eUXRebar,
++  eUXMediaRebar,
++  eUXCommunicationsRebar,
++  eUXBrowserTabBarRebar,
+   eUXToolbar,
++  eUXMediaToolbar,
++  eUXCommunicationsToolbar,
+   eUXProgress,
+   eUXTab,
+   eUXTrackbar,

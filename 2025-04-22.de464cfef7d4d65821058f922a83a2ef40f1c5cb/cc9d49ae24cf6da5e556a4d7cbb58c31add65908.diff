@@ -2497,11 +2497,12 @@ diff --git a/widget/windows/WinTaskbar.cpp b/widget/windows/WinTaskbar.cpp
 index 67717499bc66..66854f3ee2ea 100644
 --- a/widget/windows/WinTaskbar.cpp
 +++ b/widget/windows/WinTaskbar.cpp
-@@ -18,10 +18,12 @@
+@@ -18,11 +18,13 @@
  #include <nsIBaseWindow.h>
  #include <nsServiceManagerUtils.h>
  #include "nsIXULAppInfo.h"
 +#include "nsILegacyJumpListBuilder.h"
+ #include "nsUXThemeData.h"
  #include "nsWindow.h"
  #include "WinUtils.h"
  #include "TaskbarTabPreview.h"

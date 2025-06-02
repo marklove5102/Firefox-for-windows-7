@@ -1209,21 +1209,393 @@ index 3f4f03c9b35c..84e57a058524 100644
      {"widget.non-native-theme.use-theme-accent"_ns,
       widget::ThemeChangeKind::Style},
 diff --git a/widget/windows/nsLookAndFeel.cpp b/widget/windows/nsLookAndFeel.cpp
-index a3594aae2a66..f3c889aa5f71 100644
+index d85b5e8a4d47..805cdcf96509 100644
 --- a/widget/windows/nsLookAndFeel.cpp
 +++ b/widget/windows/nsLookAndFeel.cpp
-@@ -50,6 +50,30 @@ static int32_t GetTooltipOffsetVertical() {
-                     float(cursorSize) / float(kDefaultCursorSize));
+@@ -122,6 +122,9 @@ void nsLookAndFeel::RefreshImpl() {
  }
  
-+const int NUM_COMMAND_BUTTONS = 3;
-+SIZE nsLookAndFeel::sCommandButtonMetrics[NUM_COMMAND_BUTTONS];
-+bool nsLookAndFeel::sCommandButtonMetricsInitialized = false;
-+SIZE nsLookAndFeel::sCommandButtonBoxMetrics;
-+bool nsLookAndFeel::sCommandButtonBoxMetricsInitialized = false;
+ static bool UseNonNativeMenuColors(ColorScheme aScheme) {
++  if (!LookAndFeel::WindowsNonNativeMenusEnabled()) {
++    return false;
++  }
+   return LookAndFeel::GetInt(LookAndFeel::IntID::WindowsDefaultTheme) || aScheme == ColorScheme::Dark;
+ }
+ 
+@@ -153,6 +156,9 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
+         if (UseNonNativeMenuColors(aScheme)) {
+           return false;
+         }
++        if (!nsUXThemeData::IsAppThemed()) {
++          return nsUXThemeData::AreFlatMenusEnabled();
++        }
+         [[fallthrough]];
+       case ColorID::MozMenuhovertext:
+         if (UseNonNativeMenuColors(aScheme)) {
+@@ -257,6 +263,10 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
+         aColor = kNonNativeMenuText;
+         return NS_OK;
+       }
++      if (!nsUXThemeData::IsAppThemed()) {
++        idx = COLOR_MENUTEXT;
++        break;
++      }
+       [[fallthrough]];
+     case ColorID::MozMenuhovertext:
+       if (UseNonNativeMenuColors(aScheme)) {
+@@ -492,12 +502,23 @@ nsresult nsLookAndFeel::NativeGetInt(IntID aID, int32_t& aResult) {
+     case IntID::TreeScrollLinesMax:
+       aResult = 3;
+       break;
++    case IntID::WindowsClassic:
++      aResult = !nsUXThemeData::IsAppThemed();
++      break;
+     case IntID::WindowsDefaultTheme:
+       aResult = nsUXThemeData::IsDefaultWindowTheme();
+       break;
++    case IntID::DWMCompositor:
++      aResult = gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled();
++      break;
+     case IntID::WindowsAccentColorInTitlebar:
+       aResult = mTitlebarColors.mUseAccent;
+       break;
++    case IntID::WindowsGlass:
++      // Aero Glass is only available prior to Windows 8 when DWM is used.
++      aResult = (gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled() &&
++                 !IsWin8OrLater());
++      break;
+     case IntID::WindowsMica:
+       aResult = WinUtils::MicaEnabled();
+       break;
+@@ -895,12 +916,14 @@ void nsLookAndFeel::EnsureInit() {
+ 
+   const bool neededMicaWorkaround = NeedsMicaWorkaround();
+ 
+-  mColorMenuHoverText =
+-      ::GetColorFromTheme(eUXMenu, MENU_POPUPITEM, MPI_HOT, TMT_TEXTCOLOR);
+-  mColorMediaText =
+-      ::GetColorFromTheme(eUXMediaToolbar, TP_BUTTON, TS_NORMAL, TMT_TEXTCOLOR);
+-  mColorCommunicationsText = ::GetColorFromTheme(
+-      eUXCommunicationsToolbar, TP_BUTTON, TS_NORMAL, TMT_TEXTCOLOR);
++  if (nsUXThemeData::IsAppThemed()) {
++    mColorMenuHoverText =
++        ::GetColorFromTheme(eUXMenu, MENU_POPUPITEM, MPI_HOT, TMT_TEXTCOLOR);
++    mColorMediaText = ::GetColorFromTheme(eUXMediaToolbar, TP_BUTTON, TS_NORMAL,
++                                          TMT_TEXTCOLOR);
++    mColorCommunicationsText = ::GetColorFromTheme(
++        eUXCommunicationsToolbar, TP_BUTTON, TS_NORMAL, TMT_TEXTCOLOR);
++  }
+ 
+   // Fill out the sys color table.
+   for (int i = SYS_COLOR_MIN; i <= SYS_COLOR_MAX; ++i) {
+diff --git a/widget/windows/nsNativeThemeWin.cpp b/widget/windows/nsNativeThemeWin.cpp
+index 0b495540c4ab..2d19910f3e2d 100644
+--- a/widget/windows/nsNativeThemeWin.cpp
++++ b/widget/windows/nsNativeThemeWin.cpp
+@@ -350,7 +350,11 @@ static CaptionButtonPadding buttonData[3] = {
+ // Adds "hot" caption button padding to minimum widget size.
+ static void AddPaddingRect(LayoutDeviceIntSize* aSize, CaptionButton button) {
+   if (!aSize) return;
+-  RECT offset = buttonData[CAPTION_BASIC].hotPadding[button];
++  RECT offset;
++  if (!nsUXThemeData::IsAppThemed())
++    offset = buttonData[CAPTION_CLASSIC].hotPadding[button];
++  else
++    offset = buttonData[CAPTION_BASIC].hotPadding[button];
+   aSize->width += offset.left + offset.right;
+   aSize->height += offset.top + offset.bottom;
+ }
+@@ -358,7 +362,11 @@ static void AddPaddingRect(LayoutDeviceIntSize* aSize, CaptionButton button) {
+ // If we've added padding to the minimum widget size, offset
+ // the area we draw into to compensate.
+ static void OffsetBackgroundRect(RECT& rect, CaptionButton button) {
+-  RECT offset = buttonData[CAPTION_BASIC].hotPadding[button];
++  RECT offset;
++  if (!nsUXThemeData::IsAppThemed())
++    offset = buttonData[CAPTION_CLASSIC].hotPadding[button];
++  else
++    offset = buttonData[CAPTION_BASIC].hotPadding[button];
+   rect.left += offset.left;
+   rect.top += offset.top;
+   rect.right -= offset.right;
+@@ -1358,29 +1366,31 @@ nsNativeThemeWin::DrawWidgetBackground(gfxContext* aContext, nsIFrame* aFrame,
+                                        aDirtyRect);
+ 
+   // ^^ without the right sdk, assume xp theming and fall through.
+-  switch (aAppearance) {
+-    case StyleAppearance::MozWindowTitlebar:
+-    case StyleAppearance::MozWindowTitlebarMaximized:
+-      // Nothing to draw, these areas are glass. Minimum dimensions
+-      // should be set, so xul content should be laid out correctly.
+-      return NS_OK;
+-    case StyleAppearance::MozWindowButtonClose:
+-    case StyleAppearance::MozWindowButtonMinimize:
+-    case StyleAppearance::MozWindowButtonMaximize:
+-    case StyleAppearance::MozWindowButtonRestore:
+-      // Not conventional bitmaps, can't be retrieved. If we fall
+-      // through here and call the theme library we'll get aero
+-      // basic bitmaps.
+-      return NS_OK;
+-    case StyleAppearance::MozWinBorderlessGlass:
+-      // Nothing to draw, this is the glass background.
+-      return NS_OK;
+-    case StyleAppearance::MozWindowButtonBox:
+-    case StyleAppearance::MozWindowButtonBoxMaximized:
+-      // We handle these through nsIWidget::UpdateThemeGeometries
+-      return NS_OK;
+-    default:
+-      break;
++  if (gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) {
++    switch (aAppearance) {
++      case StyleAppearance::MozWindowTitlebar:
++      case StyleAppearance::MozWindowTitlebarMaximized:
++        // Nothing to draw, these areas are glass. Minimum dimensions
++        // should be set, so xul content should be layed out correctly.
++        return NS_OK;
++      case StyleAppearance::MozWindowButtonClose:
++      case StyleAppearance::MozWindowButtonMinimize:
++      case StyleAppearance::MozWindowButtonMaximize:
++      case StyleAppearance::MozWindowButtonRestore:
++        // Not conventional bitmaps, can't be retrieved. If we fall
++        // through here and call the theme library we'll get aero
++        // basic bitmaps.
++        return NS_OK;
++      case StyleAppearance::MozWinBorderlessGlass:
++        // Nothing to draw, this is the glass background.
++        return NS_OK;
++      case StyleAppearance::MozWindowButtonBox:
++      case StyleAppearance::MozWindowButtonBoxMaximized:
++        // We handle these through nsIWidget::UpdateThemeGeometries
++        return NS_OK;
++      default:
++        break;
++    }
+   }
+ 
+   int32_t part, state;
+@@ -2103,16 +2113,65 @@ LayoutDeviceIntSize nsNativeThemeWin::GetMinimumWidgetSize(
+       }
+       break;
+ 
++    case StyleAppearance::MozWindowButtonMaximize:
++    case StyleAppearance::MozWindowButtonRestore: {
++      // The only way to get accurate titlebar button info is to query a
++      // window w/buttons when it's visible. nsWindow takes care of this and
++      // stores that info in nsUXThemeData.
++      SIZE sz = nsUXThemeData::GetCommandButtonMetrics(CMDBUTTONIDX_RESTORE);
++      LayoutDeviceIntSize result(sz.cx, sz.cy);
++      AddPaddingRect(&result, CAPTIONBUTTON_RESTORE);
++      return result;
++    }
 +
-+bool nsLookAndFeel::sTitlebarInfoPopulatedAero = false;
-+bool nsLookAndFeel::sTitlebarInfoPopulatedThemed = false;
++    case StyleAppearance::MozWindowButtonMinimize: {
++      SIZE sz = nsUXThemeData::GetCommandButtonMetrics(CMDBUTTONIDX_MINIMIZE);
++      LayoutDeviceIntSize result(sz.cx, sz.cy);
++      AddPaddingRect(&result, CAPTIONBUTTON_MINIMIZE);
++      return result;
++    }
++
++    case StyleAppearance::MozWindowButtonClose: {
++      SIZE sz = nsUXThemeData::GetCommandButtonMetrics(CMDBUTTONIDX_CLOSE);
++      LayoutDeviceIntSize result(sz.cx, sz.cy);
++      AddPaddingRect(&result, CAPTIONBUTTON_CLOSE);
++      return result;
++    }
++
+     case StyleAppearance::MozWindowTitlebar:
+     case StyleAppearance::MozWindowTitlebarMaximized: {
+       LayoutDeviceIntSize result;
+       result.height = GetSystemMetrics(SM_CYCAPTION);
+       result.height += GetSystemMetrics(SM_CYFRAME);
+       result.height += GetSystemMetrics(SM_CXPADDEDBORDER);
+-      ScaleForFrameDPI(&result, aFrame);
++      // On Win8.1, we don't want this scaling, because Windows doesn't scale
++      // the non-client area of the window, and we can end up with ugly overlap
++      // of the window frame controls into the tab bar or content area. But on
++      // Win10, we render the window controls ourselves, and the result looks
++      // better if we do apply this scaling (particularly with themes such as
++      // DevEdition; see bug 1267636).
++      if (IsWin10OrLater()) {
++        ScaleForFrameDPI(&result, aFrame);
++      }
+       return result;
+     }
+ 
++    case StyleAppearance::MozWindowButtonBox:
++    case StyleAppearance::MozWindowButtonBoxMaximized: {
++      if (gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) {
++        SIZE sz = nsUXThemeData::GetCommandButtonBoxMetrics();
++        LayoutDeviceIntSize result(sz.cx,
++                                   sz.cy - GetSystemMetrics(SM_CYFRAME) -
++                                       GetSystemMetrics(SM_CXPADDEDBORDER));
++        if (aAppearance == StyleAppearance::MozWindowButtonBoxMaximized) {
++          result.width += 1;
++          result.height -= 2;
++        }
++        return result;
++      }
++      break;
++    }
++
+     default:
+       break;
+   }
+@@ -2329,6 +2388,9 @@ bool nsNativeThemeWin::ClassicThemeSupportsWidget(nsIFrame* aFrame,
+   switch (aAppearance) {
+     case StyleAppearance::Menubar:
+     case StyleAppearance::Menupopup:
++      // Classic non-flat menus are handled almost entirely through CSS.
++      if (!nsUXThemeData::AreFlatMenusEnabled()) return false;
++      [[fallthrough]];
+     case StyleAppearance::Button:
+     case StyleAppearance::NumberInput:
+     case StyleAppearance::PasswordInput:
+@@ -2422,8 +2484,14 @@ bool nsNativeThemeWin::ClassicGetWidgetPadding(nsDeviceContext* aContext,
+         return false;
+ 
+       if (part == 1) {  // top-level menu
+-        (*aResult).top = (*aResult).bottom = (*aResult).left =
+-            (*aResult).right = 2;
++        if (nsUXThemeData::AreFlatMenusEnabled() || !(state & DFCS_PUSHED)) {
++          (*aResult).top = (*aResult).bottom = (*aResult).left =
++              (*aResult).right = 2;
++        } else {
++          // make top-level menus look sunken when pushed in the Classic look
++          (*aResult).top = (*aResult).left = 3;
++          (*aResult).bottom = (*aResult).right = 1;
++        }
+       } else {
+         (*aResult).top = 0;
+         (*aResult).bottom = (*aResult).left = (*aResult).right = 2;
+@@ -2866,6 +2934,51 @@ static void DrawTab(HDC hdc, const RECT& R, int32_t aPosition, bool aSelected,
+   if (aDrawRight) ::DrawEdge(hdc, &shadeRect, EDGE_RAISED, BF_SOFT | shadeFlag);
+ }
+ 
++static void DrawMenuImage(HDC hdc, const RECT& rc, int32_t aComponent,
++                          uint32_t aColor) {
++  // This procedure creates a memory bitmap to contain the check mark, draws
++  // it into the bitmap (it is a mask image), then composes it onto the menu
++  // item in appropriate colors.
++  HDC hMemoryDC = ::CreateCompatibleDC(hdc);
++  if (hMemoryDC) {
++    // XXXjgr We should ideally be caching these, but we wont be notified when
++    // they change currently, so we can't do so easily. Same for the bitmap.
++    int checkW = ::GetSystemMetrics(SM_CXMENUCHECK);
++    int checkH = ::GetSystemMetrics(SM_CYMENUCHECK);
++
++    HBITMAP hMonoBitmap = ::CreateBitmap(checkW, checkH, 1, 1, nullptr);
++    if (hMonoBitmap) {
++      HBITMAP hPrevBitmap = (HBITMAP)::SelectObject(hMemoryDC, hMonoBitmap);
++      if (hPrevBitmap) {
++        // XXXjgr This will go pear-shaped if the image is bigger than the
++        // provided rect. What should we do?
++        RECT imgRect = {0, 0, checkW, checkH};
++        POINT imgPos = {rc.left + (rc.right - rc.left - checkW) / 2,
++                        rc.top + (rc.bottom - rc.top - checkH) / 2};
++
++        // XXXzeniko Windows renders these 1px lower than you'd expect
++        if (aComponent == DFCS_MENUCHECK || aComponent == DFCS_MENUBULLET)
++          imgPos.y++;
++
++        ::DrawFrameControl(hMemoryDC, &imgRect, DFC_MENU, aComponent);
++        COLORREF oldTextCol = ::SetTextColor(hdc, 0x00000000);
++        COLORREF oldBackCol = ::SetBkColor(hdc, 0x00FFFFFF);
++        ::BitBlt(hdc, imgPos.x, imgPos.y, checkW, checkH, hMemoryDC, 0, 0,
++                 SRCAND);
++        ::SetTextColor(hdc, ::GetSysColor(aColor));
++        ::SetBkColor(hdc, 0x00000000);
++        ::BitBlt(hdc, imgPos.x, imgPos.y, checkW, checkH, hMemoryDC, 0, 0,
++                 SRCPAINT);
++        ::SetTextColor(hdc, oldTextCol);
++        ::SetBkColor(hdc, oldBackCol);
++        ::SelectObject(hMemoryDC, hPrevBitmap);
++      }
++      ::DeleteObject(hMonoBitmap);
++    }
++    ::DeleteDC(hMemoryDC);
++  }
++}
++
+ void nsNativeThemeWin::DrawCheckedRect(HDC hdc, const RECT& rc, int32_t fore,
+                                        int32_t back, HBRUSH defaultBack) {
+   static WORD patBits[8] = {0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55};
+@@ -3074,6 +3187,60 @@ RENDER_AGAIN:
+       break;
+     case StyleAppearance::Menubar:
+       break;
++    case StyleAppearance::Menupopup:
++      NS_ASSERTION(nsUXThemeData::AreFlatMenusEnabled(),
++                   "Classic menus are styled entirely through CSS");
++      ::FillRect(hdc, &widgetRect, (HBRUSH)(COLOR_MENU + 1));
++      ::FrameRect(hdc, &widgetRect, ::GetSysColorBrush(COLOR_BTNSHADOW));
++      break;
++    case StyleAppearance::Menuitem:
++    case StyleAppearance::Checkmenuitem:
++    case StyleAppearance::Radiomenuitem:
++      // part == 0 for normal items
++      // part == 1 for top-level menu items
++      if (nsUXThemeData::AreFlatMenusEnabled()) {
++        // Not disabled and hot/pushed.
++        if ((state & (DFCS_HOT | DFCS_PUSHED)) != 0) {
++          ::FillRect(hdc, &widgetRect, (HBRUSH)(COLOR_MENUHILIGHT + 1));
++          ::FrameRect(hdc, &widgetRect, ::GetSysColorBrush(COLOR_HIGHLIGHT));
++        }
++      } else {
++        if (part == 1) {
++          if ((state & DFCS_INACTIVE) == 0) {
++            if ((state & DFCS_PUSHED) != 0) {
++              ::DrawEdge(hdc, &widgetRect, BDR_SUNKENOUTER, BF_RECT);
++            } else if ((state & DFCS_HOT) != 0) {
++              ::DrawEdge(hdc, &widgetRect, BDR_RAISEDINNER, BF_RECT);
++            }
++          }
++        } else {
++          if ((state & (DFCS_HOT | DFCS_PUSHED)) != 0) {
++            ::FillRect(hdc, &widgetRect, (HBRUSH)(COLOR_HIGHLIGHT + 1));
++          }
++        }
++      }
++      break;
++    case StyleAppearance::Menucheckbox:
++    case StyleAppearance::Menuradio:
++      if (!(state & DFCS_CHECKED)) break;  // nothin' to do
++      [[fallthrough]];
++    case StyleAppearance::Menuarrow: {
++      uint32_t color = COLOR_MENUTEXT;
++      if ((state & DFCS_INACTIVE))
++        color = COLOR_GRAYTEXT;
++      else if ((state & DFCS_HOT))
++        color = COLOR_HIGHLIGHTTEXT;
++
++      if (aAppearance == StyleAppearance::Menucheckbox)
++        DrawMenuImage(hdc, widgetRect, DFCS_MENUCHECK, color);
++      else if (aAppearance == StyleAppearance::Menuradio)
++        DrawMenuImage(hdc, widgetRect, DFCS_MENUBULLET, color);
++      else if (aAppearance == StyleAppearance::Menuarrow)
++        DrawMenuImage(hdc, widgetRect,
++                      (state & DFCS_RTL) ? DFCS_MENUARROWRIGHT : DFCS_MENUARROW,
++                      color);
++      break;
++    }
+     case StyleAppearance::Menuseparator: {
+       // separators are offset by a bit (see menu.css)
+       widgetRect.left++;
+diff --git a/widget/windows/nsUXThemeData.cpp b/widget/windows/nsUXThemeData.cpp
+index 722695a0344f..fe4061efb178 100644
+--- a/widget/windows/nsUXThemeData.cpp
++++ b/widget/windows/nsUXThemeData.cpp
+@@ -19,6 +19,30 @@ using namespace mozilla::widget;
+ 
+ MOZ_RUNINIT nsUXThemeData::ThemeHandle nsUXThemeData::sThemes[eUXNumClasses];
+ 
++const int NUM_COMMAND_BUTTONS = 3;
++SIZE nsUXThemeData::sCommandButtonMetrics[NUM_COMMAND_BUTTONS];
++bool nsUXThemeData::sCommandButtonMetricsInitialized = false;
++SIZE nsUXThemeData::sCommandButtonBoxMetrics;
++bool nsUXThemeData::sCommandButtonBoxMetricsInitialized = false;
++
++bool nsUXThemeData::sTitlebarInfoPopulatedAero = false;
++bool nsUXThemeData::sTitlebarInfoPopulatedThemed = false;
 +
 +/**
 + * Windows themes we currently detect.
@@ -1240,15 +1612,16 @@ index a3594aae2a66..f3c889aa5f71 100644
 +
 +static WindowsTheme sThemeId = WindowsTheme::Generic;
 +
- UXThemeHandle::~UXThemeHandle() { Close(); }
+ nsUXThemeData::ThemeHandle::~ThemeHandle() { Close(); }
  
- void UXThemeHandle::OpenOnce(LPCWSTR aClassList) {
-@@ -117,6 +141,165 @@ static const wchar_t* GetUXThemeClassName(UXThemeClass aClass) {
-   return L"";
+ void nsUXThemeData::ThemeHandle::OpenOnce(HWND aWindow, LPCWSTR aClassList) {
+@@ -99,6 +123,165 @@ const wchar_t* nsUXThemeData::GetClassName(nsUXThemeClass cls) {
+       return L"";
+   }
  }
- 
++
 +// static
-+void nsLookAndFeel::EnsureCommandButtonMetrics() {
++void nsUXThemeData::EnsureCommandButtonMetrics() {
 +  if (sCommandButtonMetricsInitialized) {
 +    return;
 +  }
@@ -1278,7 +1651,7 @@ index a3594aae2a66..f3c889aa5f71 100644
 +}
 +
 +// static
-+void nsLookAndFeel::EnsureCommandButtonBoxMetrics() {
++void nsUXThemeData::EnsureCommandButtonBoxMetrics() {
 +  if (sCommandButtonBoxMetricsInitialized) {
 +    return;
 +  }
@@ -1298,7 +1671,7 @@ index a3594aae2a66..f3c889aa5f71 100644
 +}
 +
 +// static
-+void nsLookAndFeel::UpdateTitlebarInfo(HWND aWnd) {
++void nsUXThemeData::UpdateTitlebarInfo(HWND aWnd) {
 +  if (!aWnd) return;
 +
 +  if (!sTitlebarInfoPopulatedAero &&
@@ -1405,108 +1778,29 @@ index a3594aae2a66..f3c889aa5f71 100644
 +                    {L"zune.msstyles", WindowsTheme::Zune},
 +                    {L"royale.msstyles", WindowsTheme::Royale}};
 +
-+
- bool nsLookAndFeel::sIsDefaultWindowsTheme = false;
- HANDLE nsLookAndFeel::GetTheme(UXThemeClass aClass) {
-   auto& handle =
-@@ -156,6 +339,9 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
-   EnsureInit();
+ bool nsUXThemeData::sIsDefaultWindowsTheme = false;
+ bool nsUXThemeData::sIsHighContrastOn = false;
  
-   auto UseNonNativeMenuColors = [&]() -> bool {
-+  if (!LookAndFeel::WindowsNonNativeMenusEnabled()) {
-+    return false;
-+  }
-   return LookAndFeel::GetInt(LookAndFeel::IntID::WindowsDefaultTheme) || aScheme == ColorScheme::Dark;
-   };
+@@ -109,6 +292,12 @@ bool nsUXThemeData::IsHighContrastOn() { return sIsHighContrastOn; }
  
-@@ -188,6 +374,9 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
-         if (UseNonNativeMenuColors()) {
-           return false;
-         }
-+        if (!nsLookAndFeel::IsAppThemed()) {
-+          return nsLookAndFeel::AreFlatMenusEnabled();
-+        }
-         [[fallthrough]];
-       case ColorID::MozMenuhovertext:
-         if (UseNonNativeMenuColors()) {
-@@ -292,6 +481,10 @@ nsresult nsLookAndFeel::NativeGetColor(ColorID aID, ColorScheme aScheme,
-         aColor = kNonNativeMenuText;
-         return NS_OK;
-       }
-+      if (!nsLookAndFeel::IsAppThemed()) {
-+        idx = COLOR_MENUTEXT;
-+        break;
-+      }
-       [[fallthrough]];
-     case ColorID::MozMenuhovertext:
-       if (UseNonNativeMenuColors()) {
-@@ -573,12 +766,23 @@ nsresult nsLookAndFeel::NativeGetInt(IntID aID, int32_t& aResult) {
-     case IntID::TreeScrollLinesMax:
-       aResult = 3;
-       break;
-+    case IntID::WindowsClassic:
-+      aResult = !nsLookAndFeel::IsAppThemed();
-+      break;
-     case IntID::WindowsDefaultTheme:
-       aResult = sIsDefaultWindowsTheme;
-       break;
-+    case IntID::DWMCompositor:
-+      aResult = gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled();
-+      break;
-     case IntID::WindowsAccentColorInTitlebar:
-       aResult = mTitlebarColors.mUseAccent;
-       break;
-+    case IntID::WindowsGlass:
-+      // Aero Glass is only available prior to Windows 8 when DWM is used.
-+      aResult = (gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled() &&
-+                 !IsWin8OrLater());
-+      break;
-     case IntID::WindowsMica:
-       aResult = WinUtils::MicaEnabled();
-       break;
-@@ -1033,12 +1237,14 @@ void nsLookAndFeel::EnsureInit() {
- 
-   const bool neededMicaWorkaround = NeedsMicaWorkaround();
- 
--  mColorMenuHoverText = ::GetColorFromTheme(UXThemeClass::Menu, MENU_POPUPITEM,
--                                            MPI_HOT, TMT_TEXTCOLOR);
--  mColorMediaText =
--      ::GetColorFromTheme(UXThemeClass::MediaToolbar, TP_BUTTON, TS_NORMAL, TMT_TEXTCOLOR);
--  mColorCommunicationsText = ::GetColorFromTheme(
--       UXThemeClass::CommunicationsToolbar, TP_BUTTON, TS_NORMAL, TMT_TEXTCOLOR);
-+  if (nsLookAndFeel::IsAppThemed()) {
-+    mColorMenuHoverText = ::GetColorFromTheme(UXThemeClass::Menu, MENU_POPUPITEM,
-+                                              MPI_HOT, TMT_TEXTCOLOR);
-+    mColorMediaText =
-+        ::GetColorFromTheme(UXThemeClass::MediaToolbar, TP_BUTTON, TS_NORMAL, TMT_TEXTCOLOR);
-+    mColorCommunicationsText = ::GetColorFromTheme(
-+         UXThemeClass::CommunicationsToolbar, TP_BUTTON, TS_NORMAL, TMT_TEXTCOLOR);
-+  }
- 
-   // Fill out the sys color table.
-   for (int i = SYS_COLOR_MIN; i <= SYS_COLOR_MAX; ++i) {
-@@ -1105,4 +1354,70 @@ void nsLookAndFeel::EnsureInit() {
-   }
- }
- 
-+// static
-+void nsLookAndFeel::UpdateNativeThemeInfo() {
+ // static
+ void nsUXThemeData::UpdateNativeThemeInfo() {
 +  // Trigger a refresh of themed button metrics if needed
 +  sTitlebarInfoPopulatedThemed = false;
 +
-+  bool mHighContrastOn = false;
 +  sIsDefaultWindowsTheme = false;
 +  sThemeId = WindowsTheme::Generic;
 +
-+  HIGHCONTRAST highContrastInfo;
-+  highContrastInfo.cbSize = sizeof(HIGHCONTRAST);
-+  if (SystemParametersInfo(SPI_GETHIGHCONTRAST, 0, &highContrastInfo, 0)) {
-+    mHighContrastOn = ((highContrastInfo.dwFlags & HCF_HIGHCONTRASTON) != 0);
-+  } else {
-+    mHighContrastOn = false;
-+  }
+   HIGHCONTRAST highContrastInfo;
+   highContrastInfo.cbSize = sizeof(HIGHCONTRAST);
+   if (SystemParametersInfo(SPI_GETHIGHCONTRAST, 0, &highContrastInfo, 0)) {
+@@ -116,5 +305,52 @@ void nsUXThemeData::UpdateNativeThemeInfo() {
+   } else {
+     sIsHighContrastOn = false;
+   }
+-  sIsDefaultWindowsTheme = !sIsHighContrastOn;
 +
-+  if (!nsLookAndFeel::IsAppThemed()) {
++  if (!nsUXThemeData::IsAppThemed()) {
 +    sThemeId = WindowsTheme::Classic;
 +    return;
 +  }
@@ -1537,7 +1831,7 @@ index a3594aae2a66..f3c889aa5f71 100644
 +  // themes "don't count" as default themes, so we specifically check for high
 +  // contrast mode in that situation.
 +  sIsDefaultWindowsTheme = [&] {
-+    if (mHighContrastOn && IsWin8OrLater()) {
++    if (sIsHighContrastOn && IsWin8OrLater()) {
 +      return false;
 +    }
 +    return sThemeId == WindowsTheme::Aero ||
@@ -1546,314 +1840,20 @@ index a3594aae2a66..f3c889aa5f71 100644
 +}
 +
 +// static
-+bool nsLookAndFeel::AreFlatMenusEnabled() {
++bool nsUXThemeData::AreFlatMenusEnabled() {
 +  BOOL useFlat = FALSE;
 +  return !!::SystemParametersInfo(SPI_GETFLATMENU, 0, &useFlat, 0) ? useFlat
 +                                                                   : false;
-+}
+ }
 +
 +// static
-+bool nsLookAndFeel::IsAppThemed() { return !!::IsAppThemed(); }
-+
- #undef AVG2
-diff --git a/widget/windows/nsNativeThemeWin.cpp b/widget/windows/nsNativeThemeWin.cpp
-index 0b495540c4ab..2d19910f3e2d 100644
---- a/widget/windows/nsNativeThemeWin.cpp
-+++ b/widget/windows/nsNativeThemeWin.cpp
-@@ -350,7 +350,11 @@ static CaptionButtonPadding buttonData[3] = {
- // Adds "hot" caption button padding to minimum widget size.
- static void AddPaddingRect(LayoutDeviceIntSize* aSize, CaptionButton button) {
-   if (!aSize) return;
--  RECT offset = buttonData[CAPTION_BASIC].hotPadding[button];
-+  RECT offset;
-+  if (!nsLookAndFeel::IsAppThemed())
-+    offset = buttonData[CAPTION_CLASSIC].hotPadding[button];
-+  else
-+    offset = buttonData[CAPTION_BASIC].hotPadding[button];
-   aSize->width += offset.left + offset.right;
-   aSize->height += offset.top + offset.bottom;
- }
-@@ -358,7 +362,11 @@ static void AddPaddingRect(LayoutDeviceIntSize* aSize, CaptionButton button) {
- // If we've added padding to the minimum widget size, offset
- // the area we draw into to compensate.
- static void OffsetBackgroundRect(RECT& rect, CaptionButton button) {
--  RECT offset = buttonData[CAPTION_BASIC].hotPadding[button];
-+  RECT offset;
-+  if (!nsLookAndFeel::IsAppThemed())
-+    offset = buttonData[CAPTION_CLASSIC].hotPadding[button];
-+  else
-+    offset = buttonData[CAPTION_BASIC].hotPadding[button];
-   rect.left += offset.left;
-   rect.top += offset.top;
-   rect.right -= offset.right;
-@@ -1358,29 +1366,31 @@ nsNativeThemeWin::DrawWidgetBackground(gfxContext* aContext, nsIFrame* aFrame,
-                                        aDirtyRect);
- 
-   // ^^ without the right sdk, assume xp theming and fall through.
--  switch (aAppearance) {
--    case StyleAppearance::MozWindowTitlebar:
--    case StyleAppearance::MozWindowTitlebarMaximized:
--      // Nothing to draw, these areas are glass. Minimum dimensions
--      // should be set, so xul content should be laid out correctly.
--      return NS_OK;
--    case StyleAppearance::MozWindowButtonClose:
--    case StyleAppearance::MozWindowButtonMinimize:
--    case StyleAppearance::MozWindowButtonMaximize:
--    case StyleAppearance::MozWindowButtonRestore:
--      // Not conventional bitmaps, can't be retrieved. If we fall
--      // through here and call the theme library we'll get aero
--      // basic bitmaps.
--      return NS_OK;
--    case StyleAppearance::MozWinBorderlessGlass:
--      // Nothing to draw, this is the glass background.
--      return NS_OK;
--    case StyleAppearance::MozWindowButtonBox:
--    case StyleAppearance::MozWindowButtonBoxMaximized:
--      // We handle these through nsIWidget::UpdateThemeGeometries
--      return NS_OK;
--    default:
--      break;
-+  if (gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) {
-+    switch (aAppearance) {
-+      case StyleAppearance::MozWindowTitlebar:
-+      case StyleAppearance::MozWindowTitlebarMaximized:
-+        // Nothing to draw, these areas are glass. Minimum dimensions
-+        // should be set, so xul content should be layed out correctly.
-+        return NS_OK;
-+      case StyleAppearance::MozWindowButtonClose:
-+      case StyleAppearance::MozWindowButtonMinimize:
-+      case StyleAppearance::MozWindowButtonMaximize:
-+      case StyleAppearance::MozWindowButtonRestore:
-+        // Not conventional bitmaps, can't be retrieved. If we fall
-+        // through here and call the theme library we'll get aero
-+        // basic bitmaps.
-+        return NS_OK;
-+      case StyleAppearance::MozWinBorderlessGlass:
-+        // Nothing to draw, this is the glass background.
-+        return NS_OK;
-+      case StyleAppearance::MozWindowButtonBox:
-+      case StyleAppearance::MozWindowButtonBoxMaximized:
-+        // We handle these through nsIWidget::UpdateThemeGeometries
-+        return NS_OK;
-+      default:
-+        break;
-+    }
-   }
- 
-   int32_t part, state;
-@@ -2103,16 +2113,65 @@ LayoutDeviceIntSize nsNativeThemeWin::GetMinimumWidgetSize(
-       }
-       break;
- 
-+    case StyleAppearance::MozWindowButtonMaximize:
-+    case StyleAppearance::MozWindowButtonRestore: {
-+      // The only way to get accurate titlebar button info is to query a
-+      // window w/buttons when it's visible. nsWindow takes care of this and
-+      // stores that info in nsUXThemeData.
-+      SIZE sz = nsLookAndFeel::GetCommandButtonMetrics(CMDBUTTONIDX_RESTORE);
-+      LayoutDeviceIntSize result(sz.cx, sz.cy);
-+      AddPaddingRect(&result, CAPTIONBUTTON_RESTORE);
-+      return result;
-+    }
-+
-+    case StyleAppearance::MozWindowButtonMinimize: {
-+      SIZE sz = nsLookAndFeel::GetCommandButtonMetrics(CMDBUTTONIDX_MINIMIZE);
-+      LayoutDeviceIntSize result(sz.cx, sz.cy);
-+      AddPaddingRect(&result, CAPTIONBUTTON_MINIMIZE);
-+      return result;
-+    }
-+
-+    case StyleAppearance::MozWindowButtonClose: {
-+      SIZE sz = nsLookAndFeel::GetCommandButtonMetrics(CMDBUTTONIDX_CLOSE);
-+      LayoutDeviceIntSize result(sz.cx, sz.cy);
-+      AddPaddingRect(&result, CAPTIONBUTTON_CLOSE);
-+      return result;
-+    }
-+
-     case StyleAppearance::MozWindowTitlebar:
-     case StyleAppearance::MozWindowTitlebarMaximized: {
-       LayoutDeviceIntSize result;
-       result.height = GetSystemMetrics(SM_CYCAPTION);
-       result.height += GetSystemMetrics(SM_CYFRAME);
-       result.height += GetSystemMetrics(SM_CXPADDEDBORDER);
--      ScaleForFrameDPI(&result, aFrame);
-+      // On Win8.1, we don't want this scaling, because Windows doesn't scale
-+      // the non-client area of the window, and we can end up with ugly overlap
-+      // of the window frame controls into the tab bar or content area. But on
-+      // Win10, we render the window controls ourselves, and the result looks
-+      // better if we do apply this scaling (particularly with themes such as
-+      // DevEdition; see bug 1267636).
-+      if (IsWin10OrLater()) {
-+        ScaleForFrameDPI(&result, aFrame);
-+      }
-       return result;
-     }
- 
-+    case StyleAppearance::MozWindowButtonBox:
-+    case StyleAppearance::MozWindowButtonBoxMaximized: {
-+      if (gfxWindowsPlatform::GetPlatform()->DwmCompositionEnabled()) {
-+        SIZE sz = nsLookAndFeel::GetCommandButtonBoxMetrics();
-+        LayoutDeviceIntSize result(sz.cx,
-+                                   sz.cy - GetSystemMetrics(SM_CYFRAME) -
-+                                       GetSystemMetrics(SM_CXPADDEDBORDER));
-+        if (aAppearance == StyleAppearance::MozWindowButtonBoxMaximized) {
-+          result.width += 1;
-+          result.height -= 2;
-+        }
-+        return result;
-+      }
-+      break;
-+    }
-+
-     default:
-       break;
-   }
-@@ -2329,6 +2388,9 @@ bool nsNativeThemeWin::ClassicThemeSupportsWidget(nsIFrame* aFrame,
-   switch (aAppearance) {
-     case StyleAppearance::Menubar:
-     case StyleAppearance::Menupopup:
-+      // Classic non-flat menus are handled almost entirely through CSS.
-+      if (!nsLookAndFeel::AreFlatMenusEnabled()) return false;
-+      [[fallthrough]];
-     case StyleAppearance::Button:
-     case StyleAppearance::NumberInput:
-     case StyleAppearance::PasswordInput:
-@@ -2422,8 +2484,14 @@ bool nsNativeThemeWin::ClassicGetWidgetPadding(nsDeviceContext* aContext,
-         return false;
- 
-       if (part == 1) {  // top-level menu
--        (*aResult).top = (*aResult).bottom = (*aResult).left =
--            (*aResult).right = 2;
-+        if (nsLookAndFeel::AreFlatMenusEnabled() || !(state & DFCS_PUSHED)) {
-+          (*aResult).top = (*aResult).bottom = (*aResult).left =
-+              (*aResult).right = 2;
-+        } else {
-+          // make top-level menus look sunken when pushed in the Classic look
-+          (*aResult).top = (*aResult).left = 3;
-+          (*aResult).bottom = (*aResult).right = 1;
-+        }
-       } else {
-         (*aResult).top = 0;
-         (*aResult).bottom = (*aResult).left = (*aResult).right = 2;
-@@ -2866,6 +2934,51 @@ static void DrawTab(HDC hdc, const RECT& R, int32_t aPosition, bool aSelected,
-   if (aDrawRight) ::DrawEdge(hdc, &shadeRect, EDGE_RAISED, BF_SOFT | shadeFlag);
- }
- 
-+static void DrawMenuImage(HDC hdc, const RECT& rc, int32_t aComponent,
-+                          uint32_t aColor) {
-+  // This procedure creates a memory bitmap to contain the check mark, draws
-+  // it into the bitmap (it is a mask image), then composes it onto the menu
-+  // item in appropriate colors.
-+  HDC hMemoryDC = ::CreateCompatibleDC(hdc);
-+  if (hMemoryDC) {
-+    // XXXjgr We should ideally be caching these, but we wont be notified when
-+    // they change currently, so we can't do so easily. Same for the bitmap.
-+    int checkW = ::GetSystemMetrics(SM_CXMENUCHECK);
-+    int checkH = ::GetSystemMetrics(SM_CYMENUCHECK);
-+
-+    HBITMAP hMonoBitmap = ::CreateBitmap(checkW, checkH, 1, 1, nullptr);
-+    if (hMonoBitmap) {
-+      HBITMAP hPrevBitmap = (HBITMAP)::SelectObject(hMemoryDC, hMonoBitmap);
-+      if (hPrevBitmap) {
-+        // XXXjgr This will go pear-shaped if the image is bigger than the
-+        // provided rect. What should we do?
-+        RECT imgRect = {0, 0, checkW, checkH};
-+        POINT imgPos = {rc.left + (rc.right - rc.left - checkW) / 2,
-+                        rc.top + (rc.bottom - rc.top - checkH) / 2};
-+
-+        // XXXzeniko Windows renders these 1px lower than you'd expect
-+        if (aComponent == DFCS_MENUCHECK || aComponent == DFCS_MENUBULLET)
-+          imgPos.y++;
-+
-+        ::DrawFrameControl(hMemoryDC, &imgRect, DFC_MENU, aComponent);
-+        COLORREF oldTextCol = ::SetTextColor(hdc, 0x00000000);
-+        COLORREF oldBackCol = ::SetBkColor(hdc, 0x00FFFFFF);
-+        ::BitBlt(hdc, imgPos.x, imgPos.y, checkW, checkH, hMemoryDC, 0, 0,
-+                 SRCAND);
-+        ::SetTextColor(hdc, ::GetSysColor(aColor));
-+        ::SetBkColor(hdc, 0x00000000);
-+        ::BitBlt(hdc, imgPos.x, imgPos.y, checkW, checkH, hMemoryDC, 0, 0,
-+                 SRCPAINT);
-+        ::SetTextColor(hdc, oldTextCol);
-+        ::SetBkColor(hdc, oldBackCol);
-+        ::SelectObject(hMemoryDC, hPrevBitmap);
-+      }
-+      ::DeleteObject(hMonoBitmap);
-+    }
-+    ::DeleteDC(hMemoryDC);
-+  }
-+}
-+
- void nsNativeThemeWin::DrawCheckedRect(HDC hdc, const RECT& rc, int32_t fore,
-                                        int32_t back, HBRUSH defaultBack) {
-   static WORD patBits[8] = {0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55};
-@@ -3074,6 +3187,60 @@ RENDER_AGAIN:
-       break;
-     case StyleAppearance::Menubar:
-       break;
-+    case StyleAppearance::Menupopup:
-+      NS_ASSERTION(nsLookAndFeel::AreFlatMenusEnabled(),
-+                   "Classic menus are styled entirely through CSS");
-+      ::FillRect(hdc, &widgetRect, (HBRUSH)(COLOR_MENU + 1));
-+      ::FrameRect(hdc, &widgetRect, ::GetSysColorBrush(COLOR_BTNSHADOW));
-+      break;
-+    case StyleAppearance::Menuitem:
-+    case StyleAppearance::Checkmenuitem:
-+    case StyleAppearance::Radiomenuitem:
-+      // part == 0 for normal items
-+      // part == 1 for top-level menu items
-+      if (nsLookAndFeel::AreFlatMenusEnabled()) {
-+        // Not disabled and hot/pushed.
-+        if ((state & (DFCS_HOT | DFCS_PUSHED)) != 0) {
-+          ::FillRect(hdc, &widgetRect, (HBRUSH)(COLOR_MENUHILIGHT + 1));
-+          ::FrameRect(hdc, &widgetRect, ::GetSysColorBrush(COLOR_HIGHLIGHT));
-+        }
-+      } else {
-+        if (part == 1) {
-+          if ((state & DFCS_INACTIVE) == 0) {
-+            if ((state & DFCS_PUSHED) != 0) {
-+              ::DrawEdge(hdc, &widgetRect, BDR_SUNKENOUTER, BF_RECT);
-+            } else if ((state & DFCS_HOT) != 0) {
-+              ::DrawEdge(hdc, &widgetRect, BDR_RAISEDINNER, BF_RECT);
-+            }
-+          }
-+        } else {
-+          if ((state & (DFCS_HOT | DFCS_PUSHED)) != 0) {
-+            ::FillRect(hdc, &widgetRect, (HBRUSH)(COLOR_HIGHLIGHT + 1));
-+          }
-+        }
-+      }
-+      break;
-+    case StyleAppearance::Menucheckbox:
-+    case StyleAppearance::Menuradio:
-+      if (!(state & DFCS_CHECKED)) break;  // nothin' to do
-+      [[fallthrough]];
-+    case StyleAppearance::Menuarrow: {
-+      uint32_t color = COLOR_MENUTEXT;
-+      if ((state & DFCS_INACTIVE))
-+        color = COLOR_GRAYTEXT;
-+      else if ((state & DFCS_HOT))
-+        color = COLOR_HIGHLIGHTTEXT;
-+
-+      if (aAppearance == StyleAppearance::Menucheckbox)
-+        DrawMenuImage(hdc, widgetRect, DFCS_MENUCHECK, color);
-+      else if (aAppearance == StyleAppearance::Menuradio)
-+        DrawMenuImage(hdc, widgetRect, DFCS_MENUBULLET, color);
-+      else if (aAppearance == StyleAppearance::Menuarrow)
-+        DrawMenuImage(hdc, widgetRect,
-+                      (state & DFCS_RTL) ? DFCS_MENUARROWRIGHT : DFCS_MENUARROW,
-+                      color);
-+      break;
-+    }
-     case StyleAppearance::Menuseparator: {
-       // separators are offset by a bit (see menu.css)
-       widgetRect.left++;
-diff --git a/widget/windows/nsLookAndFeel.h b/widget/windows/nsLookAndFeel.h
++bool nsUXThemeData::IsAppThemed() { return !!::IsAppThemed(); }
+diff --git a/widget/windows/nsUXThemeData.h b/widget/windows/nsUXThemeData.h
 index af67b0d5e23a..33ab0354b767 100644
---- a/widget/windows/nsLookAndFeel.h
-+++ b/widget/windows/nsLookAndFeel.h
+--- a/widget/windows/nsUXThemeData.h
++++ b/widget/windows/nsUXThemeData.h
 @@ -38,6 +38,13 @@ enum nsUXThemeClass {
-   NumClasses
+   eUXNumClasses
  };
  
 +enum CmdButtonIdx {
@@ -1863,13 +1863,13 @@ index af67b0d5e23a..33ab0354b767 100644
 +  CMDBUTTONIDX_BUTTONBOX
 +};
 +
- // This class makes sure we don't attempt to open a theme if the previous
- // loading attempt has failed because OpenThemeData is a heavy task and
- // it's less likely that the API returns a different result.
-@@ -61,6 +68,34 @@ class nsUXThemeData {
-   virtual ~nsLookAndFeel();
+ class nsUXThemeData {
+   // This class makes sure we don't attempt to open a theme if the previous
+   // loading attempt has failed because OpenThemeData is a heavy task and
+@@ -61,9 +68,22 @@ class nsUXThemeData {
+   };
  
-   static HANDLE GetTheme(UXThemeClass);
+   static ThemeHandle sThemes[eUXNumClasses];
 +
 +  // We initialize sCommandButtonBoxMetrics separately as a performance
 +  // optimization to avoid fetching dummy values for sCommandButtonMetrics
@@ -1879,10 +1879,20 @@ index af67b0d5e23a..33ab0354b767 100644
 +  static SIZE sCommandButtonBoxMetrics;
 +  static bool sCommandButtonBoxMetricsInitialized;
 +
+   static const wchar_t* GetClassName(nsUXThemeClass);
 +  static void EnsureCommandButtonMetrics();
 +  static void EnsureCommandButtonBoxMetrics();
+ 
+  public:
 +  static bool sTitlebarInfoPopulatedAero;
 +  static bool sTitlebarInfoPopulatedThemed;
+   static bool sIsDefaultWindowsTheme;
+   static bool sIsHighContrastOn;
+ 
+@@ -71,8 +91,22 @@ class nsUXThemeData {
+   static HANDLE GetTheme(nsUXThemeClass cls);
+   static HMODULE GetThemeDLL();
+ 
 +  // nsWindow calls this to update desktop settings info
 +  static void UpdateTitlebarInfo(HWND aWnd);
 +
@@ -1894,26 +1904,18 @@ index af67b0d5e23a..33ab0354b767 100644
 +    EnsureCommandButtonBoxMetrics();
 +    return sCommandButtonBoxMetrics;
 +  }
+   static void UpdateNativeThemeInfo();
+   static bool IsDefaultWindowTheme();
+   static bool IsHighContrastOn();
 +
 +  static bool AreFlatMenusEnabled();
 +  static bool IsAppThemed();
-+  static void UpdateNativeThemeInfo();
- 
-   void NativeInit() final;
-   void RefreshImpl() override;
+ };
+ #endif  // __UXThemeData_h__
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
 index 7b6344135ac2..c38b291c90a3 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
-@@ -701,6 +701,8 @@ nsWindow::nsWindow(bool aIsChildWindow)
-     }
-     NS_ASSERTION(sIsOleInitialized, "***** OLE is not initialized!\n");
-     MouseScrollHandler::Initialize();
-+    // Init theme data
-+    nsLookAndFeel::UpdateNativeThemeInfo();
-     RedirectedKeyDownMessageManager::Forget();
-     if (mPointerEvents.ShouldEnableInkCollector()) {
-       InkCollector::sInkCollector = new InkCollector();
 @@ -826,6 +826,15 @@ nsWindow::~nsWindow() {
   *
   **************************************************************/
@@ -1923,8 +1925,8 @@ index 7b6344135ac2..c38b291c90a3 100644
 +  return (aWindowType == WindowType::TopLevel) &&
 +         (aBorderStyle == BorderStyle::Default ||
 +          aBorderStyle == BorderStyle::All) &&
-+         (!nsLookAndFeel::sTitlebarInfoPopulatedThemed ||
-+          !nsLookAndFeel::sTitlebarInfoPopulatedAero);
++         (!nsUXThemeData::sTitlebarInfoPopulatedThemed ||
++          !nsUXThemeData::sTitlebarInfoPopulatedAero);
 +}
 +
  void nsWindow::SendAnAPZEvent(InputData& aEvent) {
@@ -1937,7 +1939,7 @@ index 7b6344135ac2..c38b291c90a3 100644
 +  // Query for command button metric data for rendering the titlebar. We
 +  // only do this once on the first window that has an actual titlebar
 +  if (ShouldCacheTitleBarInfo(mWindowType, mBorderStyle)) {
-+    nsLookAndFeel::UpdateTitlebarInfo(mWnd);
++    nsUXThemeData::UpdateTitlebarInfo(mWnd);
 +  }
 +
    static bool a11yPrimed = false;
@@ -1951,22 +1953,10 @@ index 7b6344135ac2..c38b291c90a3 100644
 +      // The minimum glass height must be the caption buttons height,
 +      // otherwise the buttons are drawn incorrectly.
 +      largest.MoveToY(std::max<uint32_t>(
-+          largest.Y(), nsLookAndFeel::GetCommandButtonBoxMetrics().cy));
++          largest.Y(), nsUXThemeData::GetCommandButtonBoxMetrics().cy));
 +    }
      margins.cyTopHeight = largest.Y();
    }
- 
-@@ -4851,7 +4849,10 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
-     case WM_THEMECHANGED: {
-       // Update non-client margin offsets
-       UpdateNonClientMargins();
--      // Invalidate the window so that the repaint will pick up the new theme.
-+      nsLookAndFeel::UpdateNativeThemeInfo();
-+
-+      // Invalidate the window so that the repaint will
-+      // pick up the new theme.
-       Invalidate(true, true, true);
-     } break;
  
 diff --git a/xpcom/ds/StaticAtoms.py b/xpcom/ds/StaticAtoms.py
 index 06410d4ca666..a1fedc48aa5d 100644
@@ -2816,15 +2806,13 @@ index 359b8f9789ed..28df315c1241 100644
  
        &:not([sidebar-positionend]) {
          border-inline-end: 0.01px solid var(--sidebar-border-color);
-@@ -279,10 +285,22 @@ sidebar-main,
+@@ -279,10 +285,18 @@ sidebar-main,
        border-inline: unset;
        color: var(--toolbox-textcolor);
        background-color: var(--toolbox-bgcolor);
 +      @media (-moz-platform: windows-win7),
 +             (-moz-platform: windows-win8) {
-+        @media (-moz-windows-default-theme) {
-+          background-color: -moz-headerbar;
-+        }
++        background-color: -moz-headerbar;
 +      }
  
        &:-moz-window-inactive {
@@ -2832,9 +2820,7 @@ index 359b8f9789ed..28df315c1241 100644
          background-color: var(--toolbox-bgcolor-inactive);
 +        @media (-moz-platform: windows-win7),
 +               (-moz-platform: windows-win8) {
-+          @media (-moz-windows-default-theme) {
-+            background-color: -moz-headerbarinactive;
-+          }
++          background-color: -moz-headerbarinactive;
 +        }
        }
      }

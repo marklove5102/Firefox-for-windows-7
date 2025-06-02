@@ -23,7 +23,7 @@ diff --git a/widget/windows/nsNativeThemeWin.cpp b/widget/windows/nsNativeThemeW
 index 04a7d35863cd..b4e06c076d27 100644
 --- a/widget/windows/nsNativeThemeWin.cpp
 +++ b/widget/windows/nsNativeThemeWin.cpp
-@@ -56,18 +56,12 @@ nsNativeThemeWin::nsNativeThemeWin()
+@@ -56,20 +56,14 @@ nsNativeThemeWin::nsNativeThemeWin()
        mProgressIndeterminateTimeStamp(TimeStamp::Now()),
        mBorderCacheValid(),
        mMinimumWidgetSizeCacheValid(),
@@ -33,6 +33,8 @@ index 04a7d35863cd..b4e06c076d27 100644
 +  // static widget style variables (e.g. sButtonBorderSize) should be
 +  // reinitialized here.
 +}
+ 
+ nsNativeThemeWin::~nsNativeThemeWin() { nsUXThemeData::Invalidate(); }
  
 -bool nsNativeThemeWin::IsWidgetAlwaysNonNative(nsIFrame* aFrame,
 -                                               StyleAppearance aAppearance) {
@@ -71,19 +73,19 @@ index 04a7d35863cd..b4e06c076d27 100644
      case StyleAppearance::Button:
 +    case StyleAppearance::Radio:
 +    case StyleAppearance::Checkbox:
-       return Some(UXThemeClass::Button);
+       return Some(eUXButton);
      case StyleAppearance::NumberInput:
      case StyleAppearance::PasswordInput:
 @@ -500,7 +507,11 @@ mozilla::Maybe<nsUXThemeClass> nsNativeThemeWin::GetThemeClass(
      case StyleAppearance::Range:
      case StyleAppearance::RangeThumb:
-       return Some(UXThemeClass::Trackbar);
+       return Some(eUXTrackbar);
 +    case StyleAppearance::SpinnerUpbutton:
 +    case StyleAppearance::SpinnerDownbutton:
-+      return Some(UXThemeClass::Spin);
++      return Some(eUXSpin);
      case StyleAppearance::Menulist:
 +    case StyleAppearance::MozMenulistArrowButton:
-       return Some(UXThemeClass::Combobox);
+       return Some(eUXCombobox);
      case StyleAppearance::Treeheadercell:
      case StyleAppearance::Treeheadersortarrow:
 @@ -597,6 +608,36 @@ nsresult nsNativeThemeWin::GetThemePartAndState(nsIFrame* aFrame,
@@ -513,28 +515,28 @@ index 24bf34977842..1c28d070aa46 100644
    bool ThemeDrawsFocusForWidget(nsIFrame*, StyleAppearance) override;
  
    bool ThemeWantsButtonInnerFocusRing() override { return true; }
-diff --git a/widget/windows/nsLookAndFeel.cpp b/widget/windows/nsLookAndFeel.cpp
+diff --git a/widget/windows/nsUXThemeData.cpp b/widget/windows/nsUXThemeData.cpp
 index b3f9e6fce90b..b27681115519 100644
---- a/widget/windows/nsLookAndFeel.cpp
-+++ b/widget/windows/nsLookAndFeel.cpp
+--- a/widget/windows/nsUXThemeData.cpp
++++ b/widget/windows/nsUXThemeData.cpp
 @@ -72,6 +72,8 @@ const wchar_t* nsUXThemeData::GetClassName(nsUXThemeClass cls) {
        return L"Tab";
-     case UXThemeClass::Trackbar:
+     case eUXTrackbar:
        return L"Trackbar";
-+    case UXThemeClass::Spin:
++    case eUXSpin:
 +      return L"Spin";
-     case UXThemeClass::Combobox:
+     case eUXCombobox:
        return L"Combobox";
-     case UXThemeClass::Header:
-diff --git a/widget/windows/nsLookAndFeel.h b/widget/windows/nsLookAndFeel.h
+     case eUXHeader:
+diff --git a/widget/windows/nsUXThemeData.h b/widget/windows/nsUXThemeData.h
 index 38be8b448497..cace4dd9c62b 100644
---- a/widget/windows/nsLookAndFeel.h
-+++ b/widget/windows/nsLookAndFeel.h
+--- a/widget/windows/nsUXThemeData.h
++++ b/widget/windows/nsUXThemeData.h
 @@ -24,6 +24,7 @@ enum nsUXThemeClass {
-   Progress,
-   Tab,
-   Trackbar,
-+  Spin,
-   Combobox,
-   Header,
-   Listview,
+   eUXProgress,
+   eUXTab,
+   eUXTrackbar,
++  eUXSpin,
+   eUXCombobox,
+   eUXHeader,
+   eUXListview,

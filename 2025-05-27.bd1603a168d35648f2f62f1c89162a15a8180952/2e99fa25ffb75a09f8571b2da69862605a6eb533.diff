@@ -56,7 +56,7 @@ index 12c52a9599ef..b7206a43f6ff 100644
      case StyleAppearance::Radio:
      case StyleAppearance::Checkbox:
 +    case StyleAppearance::Groupbox:
-       return Some(UXThemeClass::Button);
+       return Some(eUXButton);
      case StyleAppearance::NumberInput:
      case StyleAppearance::PasswordInput:
 @@ -639,6 +640,13 @@ nsresult nsNativeThemeWin::GetThemePartAndState(nsIFrame* aFrame,

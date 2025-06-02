@@ -656,10 +656,10 @@ index 04883a833fc3..1a8af27882e5 100644
 +++ b/widget/windows/nsNativeThemeWin.cpp
 @@ -504,6 +504,7 @@ mozilla::Maybe<nsUXThemeClass> nsNativeThemeWin::GetThemeClass(
      case StyleAppearance::Menulist:
-       return Some(UXThemeClass::Combobox);
+       return Some(eUXCombobox);
      case StyleAppearance::Treeheadercell:
 +    case StyleAppearance::Treeheadersortarrow:
-       return Some(UXThemeClass::Header);
+       return Some(eUXHeader);
      case StyleAppearance::Listbox:
      case StyleAppearance::Treeview:
 @@ -777,6 +778,12 @@ nsresult nsNativeThemeWin::GetThemePartAndState(nsIFrame* aFrame,
