@@ -1,0 +1,1 @@
+Bug 1937638 - Fix popup windows when using layer compositor mode r=gfx-reviewers,lsalzman    2024-12-17 06:01:58    5ab5ddf612bd4c0db2270b843be8bc7d2f108238

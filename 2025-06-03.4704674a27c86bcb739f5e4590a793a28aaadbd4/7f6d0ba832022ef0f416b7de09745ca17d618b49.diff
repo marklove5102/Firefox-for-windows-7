@@ -1,0 +1,44 @@
+diff --git a/toolkit/crashreporter/crash_helper_common/src/ipc_connector/windows.rs b/toolkit/crashreporter/crash_helper_common/src/ipc_connector/windows.rs
+index 80fdb63b1734..6411e25017d0 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/ipc_connector/windows.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/ipc_connector/windows.rs
+@@ -20,7 +20,7 @@ use std::{
+ use windows_sys::Win32::{
+     Foundation::{
+         GetLastError, BOOL, ERROR_FILE_NOT_FOUND, ERROR_INVALID_MESSAGE, ERROR_IO_PENDING,
+-        ERROR_PIPE_BUSY, FALSE, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
++        ERROR_PIPE_BUSY, FALSE, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT, TRUE, WAIT_OBJECT_0
+     },
+     Security::SECURITY_ATTRIBUTES,
+     Storage::FileSystem::{
+@@ -32,7 +32,8 @@ use windows_sys::Win32::{
+             GetNamedPipeClientProcessId, SetNamedPipeHandleState, WaitNamedPipeA,
+             PIPE_READMODE_MESSAGE,
+         },
+-        IO::{GetOverlappedResult, GetOverlappedResultEx, OVERLAPPED},
++        IO::{GetOverlappedResult, OVERLAPPED},
++        Threading::WaitForSingleObject,
+     },
+ };
+ 
+@@ -295,13 +296,17 @@ impl IPCConnector {
+         if res == FALSE {
+             let error = unsafe { GetLastError() };
+             if error == ERROR_IO_PENDING {
++                let wait_result = unsafe { WaitForSingleObject(overlapped.hEvent, IO_TIMEOUT as u32) };
++                if wait_result != WAIT_OBJECT_0 {
++                  return Err(IPCError::System(unsafe { GetLastError() }));
++                }
++
+                 let res = unsafe {
+-                    GetOverlappedResultEx(
++                    GetOverlappedResult(
+                         self.as_raw(),
+                         overlapped,
+                         number_of_bytes_transferred,
+-                        IO_TIMEOUT as u32,
+-                        /* bAlertable */ FALSE,
++                        TRUE,
+                     )
+                 };
+ 

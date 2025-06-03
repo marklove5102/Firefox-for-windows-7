@@ -1,0 +1,1 @@
+Bug 1719802 - Remove WinTaskbar::SetCurrentProcessExplicitAppUserModelIDPtr. r=jmathies    2021-07-22 16:05:17    2c912d63d25118bd3694e44da58d30d75d5a2cc7
