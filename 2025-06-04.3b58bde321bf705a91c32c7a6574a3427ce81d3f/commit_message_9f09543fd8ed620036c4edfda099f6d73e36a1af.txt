@@ -1,0 +1,4 @@
+Bug 1946161: apply code formatting via Lando    2025-02-06 08:20:26    9f09543fd8ed620036c4edfda099f6d73e36a1af
+Bug 1946161 - Remove unused tab-scroll-arrow-* appearance values. r=stransky    2025-02-06 06:05:39    9878a47b0e032d51e76d963033d10584aa0658aa
+Bug 1946161 - Use non-native checkboxes on gtk. r=stransky,desktop-theme-reviewers,dao    2025-02-06 06:05:38    9a35fd20c3e46f90eb7d6ccf904d00a4fad070fb
+Bug 1946161 - Simplify spinner-related appearance values. r=stransky,mac-reviewers,spohl    2025-02-06 06:05:38    ad4baeb903a20cafcf71ecc6c36e4493f9e5bb6a

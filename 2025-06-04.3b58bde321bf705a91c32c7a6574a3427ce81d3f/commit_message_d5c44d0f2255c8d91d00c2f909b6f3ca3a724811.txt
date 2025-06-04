@@ -1,0 +1,4 @@
+Bug 1966470 - Simplify how Thunderbird artifacts get found. r=nalexander    2025-05-23 06:32:51    d5c44d0f2255c8d91d00c2f909b6f3ca3a724811
+Bug 1966470 - Part 2: Use `mach artifact install --unfiltered-project-package` in single-locale repacks. r=firefox-build-system-reviewers,glandium    2025-05-22 00:32:56    88e52afb397c96e667134ae5bc95f00d3790d29a
+Bug 1966470 - Part 1: Add `mach artifact install --unfiltered-project-package` command. r=firefox-build-system-reviewers,glandium    2025-05-22 00:32:56    5561c138539c91a912785f227a25d72ec0d8a5a4
+Bug 1966470 - Pre: Make `l10n-repack.py` command line easier to copy-paste. r=firefox-build-system-reviewers,glandium    2025-05-22 00:32:56    10e18f7f349969c107dca34ac9c88ee896021661
