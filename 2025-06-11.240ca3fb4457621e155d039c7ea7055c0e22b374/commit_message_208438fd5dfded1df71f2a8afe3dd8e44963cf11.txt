@@ -1,0 +1,7 @@
+Bug 1970692 - Part 2: Add a `mach` command for Desktop single-locale repacks. r=firefox-build-system-reviewers,ahochheiden    2025-06-10 01:16:57    208438fd5dfded1df71f2a8afe3dd8e44963cf11
+Bug 1970692 - Part 1: Remove single-locale upload related cruft. r=firefox-build-system-reviewers,ahochheiden    2025-06-10 01:16:57    d78c841310d17941df500710fc6d463815fb5a77
+Bug 1970692 - Pre: Get rid of `install/sea`. r=firefox-build-system-reviewers,browser-installer-reviewers,nrishel,ahochheiden    2025-06-10 01:16:57    b7ef613b870c39799e132027de9cd8067a64a43c
+Bug 1970692 - Pre: Simplify `make upload`; make checksums reproducible. r=firefox-build-system-reviewers,ahochheiden    2025-06-10 01:16:56    6aade369159bf59a6bf52084b77ae9ac92b273cf
+Bug 1970692 - Pre: Allow using simple package names locally. r=firefox-build-system-reviewers,ahochheiden    2025-06-10 01:16:56    92ef5a9e5faa3cdc7f7a48939a4ace50062aa75b
+Bug 1970692 - Pre: Avoid errors running `mach build` with unbuilt trees. r=firefox-build-system-reviewers,ahochheiden    2025-06-10 01:16:56    6c2790e04b70f3d2c757643c9fa19ddb138f8b3f
+Bug 1970692 - Pre: Avoid Linux `l10n` timeouts. r=firefox-build-system-reviewers,ahochheiden    2025-06-10 01:16:56    4df7a71ea9cefd4e3b6194f48143c328518a6e28

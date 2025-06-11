@@ -1,0 +1,1 @@
+Bug 1959540 - Simplify XUL menu structure. r=Gijs,desktop-theme-reviewers,settings-reviewers,urlbar-reviewers,dao    2025-04-14 20:59:53    4d6a6ce99d3276fb0ef18a882fd86dfa2b2589a2

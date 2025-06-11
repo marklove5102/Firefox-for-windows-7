@@ -3541,7 +3541,7 @@ index df305bd8d5ef..fff0e67cc8da 100644
  //  - `Nothing` if not yet set.
  //  - `Some(nullptr)` if no attempt should be made to set it.
 -static mozilla::Maybe<HWINEVENTHOOK> sWinCloakEventHook = Nothing();
-+static mozilla::Maybe<HWINEVENTHOOK> sWinCloakEventHook =
++MOZ_RUNINIT static mozilla::Maybe<HWINEVENTHOOK> sWinCloakEventHook =
 +    IsWin8OrLater() ? Nothing() : Some(HWINEVENTHOOK(nullptr));
  static mozilla::LazyLogModule sCloakingLog("DWMCloaking");
  
@@ -3605,7 +3605,7 @@ index df305bd8d5ef..fff0e67cc8da 100644
    uint32_t mA11yBlockCount;
  };
  
-+WindowsDllInterceptor TIPMessageHandler::sTipTsfInterceptor;
++MOZ_RUNINIT WindowsDllInterceptor TIPMessageHandler::sTipTsfInterceptor;
 +WindowsDllInterceptor::FuncHookType<WINEVENTPROC>
 +    TIPMessageHandler::sProcessCaretEventsStub;
  WindowsDllInterceptor::FuncHookType<decltype(&SendMessageTimeoutW)>

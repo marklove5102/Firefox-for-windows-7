@@ -1,0 +1,2 @@
+Bug 1969802 - Part 2: Make Desktop single-locale repacks configure each locale. r=firefox-build-system-reviewers,ahochheiden    2025-06-10 07:12:45    c5adc5abba786f453bb46b4b398640ffc6aeb0e5
+Bug 1969802 - Part 1: Make `MOZ_UI_LOCALE` singular. r=firefox-build-system-reviewers,ahochheiden    2025-06-10 07:12:45    e77cb7d97e72a6e1e23635eb9e6f922d175708f7

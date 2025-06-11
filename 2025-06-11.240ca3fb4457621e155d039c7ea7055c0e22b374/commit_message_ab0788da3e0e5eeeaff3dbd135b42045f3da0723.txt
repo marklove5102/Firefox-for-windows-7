@@ -1,0 +1,2 @@
+Bug 1967208 - Unify menulist.css. r=desktop-theme-reviewers,dao    2025-05-22 15:49:49    ab0788da3e0e5eeeaff3dbd135b42045f3da0723
+Bug 1967208 - Fix native menulist styling on Linux and Windows. r=desktop-theme-reviewers,sfoster    2025-05-22 15:49:49    e683ed9e52575d83cda339bc83a873bbac655bfc
