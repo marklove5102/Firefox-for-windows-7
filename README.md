@@ -7,8 +7,7 @@ Firefox 115 is the last version to support Windows 7. This repository includes p
 
 ## Platform Support
 
-- Windows 7, 8, 10, 11 or Windows Vista with Service Pack 2 (SP2) and Platform Update.
-- You also need to install [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170).
+Windows 7, 8, 10, 11 or Windows Vista with Service Pack 2 (SP2) and Platform Update.
 
 ![](imgs/snapshot.png)
 
@@ -86,6 +85,8 @@ Firefox 115 is the last version to support Windows 7. This repository includes p
 
      ```bash
      ac_add_options MOZ_TELEMETRY_REPORTING=1
+     ac_add_options --with-redist=<CRT_LOCATION>
+     export WIN_UCRT_REDIST_DIR=<UCRT_LOCATION>
      ac_add_options --disable-sandbox
      ac_add_options --target=i686-pc-windows-msvc
      ac_add_options --enable-optimize
@@ -101,6 +102,8 @@ Firefox 115 is the last version to support Windows 7. This repository includes p
 
      ```bash
      ac_add_options MOZ_TELEMETRY_REPORTING=1
+     ac_add_options --with-redist=<CRT_LOCATION>
+     export WIN_UCRT_REDIST_DIR=<UCRT_LOCATION>
      ac_add_options --target=x86_64-pc-windows-msvc
      ac_add_options --enable-optimize
      ac_add_options --disable-tests
@@ -114,5 +117,5 @@ Firefox 115 is the last version to support Windows 7. This repository includes p
    - ```bash
      ./mach build
      ./mach package
-     ./mach build installers-AB-CD
+     ./mach build installers-$AB_CD
      ```

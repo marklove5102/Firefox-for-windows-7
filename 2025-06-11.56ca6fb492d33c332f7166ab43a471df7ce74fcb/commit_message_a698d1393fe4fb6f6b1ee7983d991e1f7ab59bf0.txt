@@ -1,0 +1,1 @@
+Bug 1966716: Use USER_LIMITED for the Windows GPU process sandbox on Nightly. r=handyman    2025-06-10 21:43:44    a698d1393fe4fb6f6b1ee7983d991e1f7ab59bf0
