@@ -1,0 +1,1 @@
+Bug 1926624 - Unify top level widget behavior across platforms, standardizing on previous macOS behavior. r=stransky,mac-reviewers,win-reviewers,spohl,nrishel    2024-11-08 17:29:26    0b6ca42c5b87dae954fa5d260ccecb6bcd38ceb9
