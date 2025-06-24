@@ -16,7 +16,7 @@ Windows 7, 8, 10, 11 or Windows Vista with Service Pack 2 (SP2) and Platform Upd
 1. Bootstrap a copy of the Firefox source code
 
    ```bat
-   git clone https://github.com/mozilla-firefox/firefox.git
+   git clone https://github.com/mozilla/gecko-dev.git
    ```
 
    This repository contains patches for specific versions of Firefox, stored in directories named `<DATE>.<commit_id>`. Here, `commit_id` is the commit ID of Firefox, and `DATE` is purely for File Explorer.

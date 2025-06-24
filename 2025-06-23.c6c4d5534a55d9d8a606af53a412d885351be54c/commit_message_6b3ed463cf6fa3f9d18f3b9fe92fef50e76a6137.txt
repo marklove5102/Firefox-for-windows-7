@@ -1,0 +1,1 @@
+Bug 1766470 - Unify menuseparator implementation across platforms and increase hit area. r=emilio,Itiel    2023-06-22 16:46:17    6b3ed463cf6fa3f9d18f3b9fe92fef50e76a6137
