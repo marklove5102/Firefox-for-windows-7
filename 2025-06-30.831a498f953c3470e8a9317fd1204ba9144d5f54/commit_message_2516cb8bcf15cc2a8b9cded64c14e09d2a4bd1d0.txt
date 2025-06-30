@@ -1,0 +1,1 @@
+Bug 1893458 - Verify Start Menu shortcuts created at runtime have propagated to `shell:appsfolder` before attempting to pin them. r=win-reviewers,rkraesig    2024-11-08 05:51:23    2516cb8bcf15cc2a8b9cded64c14e09d2a4bd1d0

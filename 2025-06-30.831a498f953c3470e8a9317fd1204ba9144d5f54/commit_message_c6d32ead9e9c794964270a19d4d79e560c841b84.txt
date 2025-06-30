@@ -1,0 +1,1 @@
+Bug 1364624 - Part 2: Switch from CRITICALSECTION to SRWLOCK. r=froydnj    2018-04-28 07:48:47    c6d32ead9e9c794964270a19d4d79e560c841b84
