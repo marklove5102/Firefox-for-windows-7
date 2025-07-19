@@ -1,1 +1,0 @@
-Bug 1835851 - [3/3] cleanup: remove pre-Windows-10 checks from new code  r=gstoll    2023-07-28 08:16:46    a43de70a1a7f3479b4331c548083e9940bfa38a7

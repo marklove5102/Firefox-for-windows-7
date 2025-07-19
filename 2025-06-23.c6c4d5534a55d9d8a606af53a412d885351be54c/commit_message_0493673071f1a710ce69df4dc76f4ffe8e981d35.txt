@@ -1,1 +1,0 @@
-Bug 1967530 - Remove AssumeThemePartAndStateAreTransparent. r=win-reviewers,handyman    2025-05-21 04:06:06    0493673071f1a710ce69df4dc76f4ffe8e981d35

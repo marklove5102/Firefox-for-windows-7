@@ -1,2 +1,0 @@
-Bug 1959466 - Rename menu-shared.css to menu.css. r=desktop-theme-reviewers,dao    2025-04-10 01:20:52    6d1b988ca4de1c146613c36df1e4dd242d3fa602
-Bug 1959466 - Remove platform-specific menu.css in favor of menu-shared.css. r=desktop-theme-reviewers,dao    2025-04-10 01:20:52    f2599a2e3f96a6ffd33b858c36090118f1ebd361

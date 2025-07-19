@@ -1,1 +1,0 @@
-Bug 1880394 - Give the icon to the dialog window class, and revert bug 1880226. r=win-reviewers,handyman    2024-02-19 18:15:00    7758e3494a30954158864564344bdd80a3a9dc48

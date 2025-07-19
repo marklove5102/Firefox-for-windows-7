@@ -1,1 +1,0 @@
-Bug 1960146 - Remove GDI font backend. r=jfkthame    2025-06-15 23:27:52    4f6bb0554be4f78239ecc9fc058cdc4f009ad9e9

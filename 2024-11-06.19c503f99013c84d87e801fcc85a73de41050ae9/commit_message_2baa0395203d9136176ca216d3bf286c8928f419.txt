@@ -1,1 +1,0 @@
-Bug 1871137 - Remove bogus rule from toolbarbutton.css. r=desktop-theme-reviewers,dao    2023-12-29 23:18:20    2baa0395203d9136176ca216d3bf286c8928f419

@@ -1,6 +1,0 @@
-Bug 1911763: apply code formatting via Lando    2024-09-30 20:19:07    a1c584b0480d2ee96dd3e99bfc06c981ce659403
-Bug 1911763 - Simplify non-client-area event handling. r=win-reviewers,rkraesig    2024-09-30 20:16:09    bea3b6bc8aa0cd3915764e89bcd1d9683fefd037
-Bug 1911763 - Clean-up plumbing for transparent window compositing on windows. r=gfx-reviewers,sotaro    2024-09-30 20:16:08    bb03b082e633dea1cff2a89bbf07e171cf7e33ca
-Bug 1911763 - Make window transparency not apply WS_EX_LAYERED for toplevels, and allow them to be accelerated. r=win-reviewers,rkraesig    2024-09-30 20:16:08    e9ac838705b4092716030f5cb2ac2791d4755c66
-Bug 1911763 - Remove implicitly-added chrome window styles. r=win-reviewers,rkraesig    2024-09-30 20:16:07    bacdfefebff5f0a2321fa2537f76e6afbeacfd90
-Bug 1911763 - Improve invalidation of top-level transparent windows. r=win-reviewers,rkraesig,handyman    2024-09-30 20:16:07    da90a9b6c8dbd0c2a6e5ea8bc8f77cebe00f775a

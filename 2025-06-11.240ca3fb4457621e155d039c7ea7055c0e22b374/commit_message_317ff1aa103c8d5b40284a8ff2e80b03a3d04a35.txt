@@ -1,1 +1,0 @@
-Bug 1904436 - Implement private browser pinning using new Windows taskbar APIs r=nrishel,win-reviewers,rkraesig    2024-08-07 21:12:20    317ff1aa103c8d5b40284a8ff2e80b03a3d04a35

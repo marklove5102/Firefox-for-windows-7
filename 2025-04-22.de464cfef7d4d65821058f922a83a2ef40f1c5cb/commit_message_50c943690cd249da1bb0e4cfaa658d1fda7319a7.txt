@@ -1,5 +1,0 @@
-Bug 1869053 - [1/5] modernize our `mscom::AgileReference` class  r=handyman    2023-12-22 03:46:54    2fd12fe1ad9b3b7f7287f0a64be3b9725fe6a1b3
-Bug 1869053 - [2/5] eliminate all implicit conversions between RefPtr and AgileReference  r=handyman,win-reviewers    2023-12-22 03:46:54    149e60c0397b80cc9d68e85e31dea3508c9ef8d5
-Bug 1869053 - [3/5] simplify use of AgileReference in IAudioSessionControl  r=handyman,win-reviewers    2023-12-22 03:46:55    3e45fd349e283480d2786022dd37b111872fac81
-Bug 1869053 - [4/5] remove EnsureMTA::CreateInstance  r=handyman    2023-12-22 03:46:55    d1a2476c7adfe97c8692aae9fcd1b3f8a7b6f3b9
-Bug 1869053 - [5/5] templatize and further simplify AgileReference  r=handyman,win-reviewers    2023-12-22 03:46:55    50c943690cd249da1bb0e4cfaa658d1fda7319a7

@@ -1,1 +1,0 @@
-Bug 1884652 - Remove titlebars on panels and PopupLevel::Floating. r=mac-reviewers,bradwerth    2024-03-12 03:42:58    c9056b81bade6020346a1d673e7381613d84b268

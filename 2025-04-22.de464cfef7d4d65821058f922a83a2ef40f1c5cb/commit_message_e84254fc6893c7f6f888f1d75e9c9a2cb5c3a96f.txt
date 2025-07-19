@@ -1,1 +1,0 @@
-Bug 1954456 - Re-enable SurfaceDescriptorD3D10 fast path of CanvasRenderingContext2D::DrawImage() with accelerated canvas r=gfx-reviewers,lsalzman    2025-03-18 12:31:05    e84254fc6893c7f6f888f1d75e9c9a2cb5c3a96f

@@ -1,2 +1,0 @@
-Bug 1844908 - Remove pre-Win10-specific codepath from Media Transport. r=bwc,webrtc-reviewers    2023-08-23 03:11:41    0ed4fc212e356a55d6b36c9a6120edf4a6586d66
-Bug 1844908 - Remove unused Windows version check functions. r=handyman    2023-08-23 03:11:41    84f3eeec16cceb9d3a3b511a8bbfc4f8bdd35d4f

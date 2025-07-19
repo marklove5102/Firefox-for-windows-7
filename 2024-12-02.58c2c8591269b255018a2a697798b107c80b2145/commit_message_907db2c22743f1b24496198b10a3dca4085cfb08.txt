@@ -1,1 +1,0 @@
-Bug 1838460 - Remove unused -moz-buttondefault color. r=stransky    2023-07-19 01:21:40    907db2c22743f1b24496198b10a3dca4085cfb08

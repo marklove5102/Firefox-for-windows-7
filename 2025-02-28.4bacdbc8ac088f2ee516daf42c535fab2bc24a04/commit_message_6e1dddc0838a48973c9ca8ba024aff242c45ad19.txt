@@ -1,1 +1,0 @@
-Bug 1403931: Enable USER_RESTRICTED on content process sandbox for Release. r=gcp    2024-11-22 00:36:08    6e1dddc0838a48973c9ca8ba024aff242c45ad19

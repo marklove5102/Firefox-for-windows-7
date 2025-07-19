@@ -1,1 +1,0 @@
-Bug 1844908 - Remove pre-Win10-specific codepath from gfx/. r=gfx-reviewers,nical    2023-08-17 10:58:21    33a7abd0087d00034fa3c39f1e8dedb22bb3d291

@@ -1,2 +1,0 @@
-Bug 1958213 - Unify menu styling a bit more. r=dao,desktop-theme-reviewers    2025-04-04 17:23:31    350775c65e817bf1a09987f6e8d79291905fcc7e
-Bug 1958213 - Remove support for iconic menubar items. r=desktop-theme-reviewers,dao    2025-04-04 17:23:31    5ecd78ce64f5637836502c57fe09443323766110

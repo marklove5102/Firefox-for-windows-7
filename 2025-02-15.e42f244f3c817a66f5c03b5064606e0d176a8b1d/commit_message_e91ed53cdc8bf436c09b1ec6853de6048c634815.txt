@@ -1,1 +1,0 @@
-Bug 1946066 - Simplify translucency setters. r=win-reviewers,rkraesig    2025-02-06 21:45:58    e91ed53cdc8bf436c09b1ec6853de6048c634815

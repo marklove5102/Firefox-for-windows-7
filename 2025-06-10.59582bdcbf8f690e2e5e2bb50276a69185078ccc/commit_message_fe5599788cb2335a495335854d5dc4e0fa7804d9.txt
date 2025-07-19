@@ -1,1 +1,0 @@
-Bug 1682514 - Register the Windows Error Reporting exception module so that it can intercept main process crashes r=dmajor    2021/4/7 15:55:23    fe5599788cb2335a495335854d5dc4e0fa7804d9

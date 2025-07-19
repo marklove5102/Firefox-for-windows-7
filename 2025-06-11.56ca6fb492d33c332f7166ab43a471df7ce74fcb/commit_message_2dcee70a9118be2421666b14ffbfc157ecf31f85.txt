@@ -1,1 +1,0 @@
-Bug 1966675 - Remove all remnants of ::-moz-focus-inner. r=layout-reviewers,desktop-theme-reviewers,devtools-reviewers,nchevobbe,dao    2025-05-16 21:26:37    2dcee70a9118be2421666b14ffbfc157ecf31f85

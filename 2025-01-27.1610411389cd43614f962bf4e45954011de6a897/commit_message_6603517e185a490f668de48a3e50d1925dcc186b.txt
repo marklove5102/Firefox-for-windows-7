@@ -1,5 +1,0 @@
-Bug 1932600 - Simplify chrome attribute handling. r=smaug,dao    2024-11-28 20:12:51    6603517e185a490f668de48a3e50d1925dcc186b
-Bug 1932600 - Use customtitlebar rather than tabsintitlebar in front-end code. r=dao,desktop-theme-reviewers,tabbrowser-reviewers,sidebar-reviewers,nsharpley    2024-11-28 20:12:51    06b1c50bed2bd119544d28d5896d2354693bba81
-Bug 1930292 - Turn chromemargin into a boolean attribute. r=win-reviewers,desktop-theme-reviewers,pip-reviewers,firefox-desktop-core-reviewers ,dao,mconley,rkraesig    2024-11-28 20:12:50    cbdb353cb42bcd40667b2c716fd77d13914bd4d2
-Bug 1930292 - Don't extend into the frame border area with chromemargin=0,0,0,0. r=win-reviewers,rkraesig    2024-11-28 20:12:50    fab28d68e901fbe1317674cd41f7f0aa992f1768
-Bug 1930292 - Stop setting non-zero chromemargin values. r=win-reviewers,handyman,firefox-desktop-core-reviewers ,dao    2024-11-28 20:12:49    f3b4f0511dc2180ff16f0c38e5a763073ea45b2d

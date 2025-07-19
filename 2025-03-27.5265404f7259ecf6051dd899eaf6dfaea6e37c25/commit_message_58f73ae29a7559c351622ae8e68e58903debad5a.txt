@@ -1,1 +1,0 @@
-Bug 1843044 - Make windows titlebar system colors return our theme's colors for the default theme. r=mhowell    2023-07-28 22:43:42    58f73ae29a7559c351622ae8e68e58903debad5a

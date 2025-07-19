@@ -1,1 +1,0 @@
-Bug 1869835 - Part 1: Add code to emit ETW markers on Windows when a trace logger is enabled. r=canaltinova,profiler-reviewers    2023-12-22 02:17:40    f9d9059cf67e2651606ab820375c40bc9adcd745

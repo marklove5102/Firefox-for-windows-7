@@ -1,5 +1,5 @@
 # ![](imgs/default64.png)Firefox for windows 7![](imgs/windows.png)
-Firefox is the fast, lightweight, privacy-focused browser that works across all your devices.
+[Firefox](https://firefox.com/) is a fast, reliable and private web browser from the non-profit [Mozilla organization](https://mozilla.org/).
 
 Firefox 115 is the last version to support Windows 7. This repository includes patches that enable Firefox to run on Windows 7 beyond the official end-of-support date, allowing users to continue using the latest features and improvements from Firefox.
 
@@ -16,13 +16,13 @@ Windows 7, 8, 10, 11 or Windows Vista with Service Pack 2 (SP2) and Platform Upd
 1. Bootstrap a copy of the Firefox source code
 
    ```bat
-   git clone https://github.com/mozilla/gecko-dev.git
+   git clone https://github.com/mozilla-firefox/firefox.git
    ```
 
    This repository contains patches for specific versions of Firefox, stored in directories named `<DATE>.<commit_id>`. Here, `commit_id` is the commit ID of Firefox, and `DATE` is purely for File Explorer.
 
    ```bat
-   cd gecko-dev
+   cd firefox
    git checkout <commit_id>
    ./mach bootstrap
    ```
