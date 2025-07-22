@@ -1,0 +1,6 @@
+Bug 1964600 - Introduce an IPC channel between child processes and the crash helper r=afranchuk    2025-07-04 18:55:07    846cb99e6fab8c059e6f1ba02fb63b693d1e3964
+Bug 1964600 - Daemonize the crash helper process on Linux and macOS r=afranchuk    2025-07-04 18:55:07    767696d4884ed6403ccb2cd8c88475430d28377e
+Bug 1964600 - Allow Windows crash helper IPC to pass handles r=afranchuk    2025-07-04 18:55:06    ef48704b7a7b3acb25832f9aa808b5871cb3da4c
+Bug 1964600 - Allow macOS crash helper IPC to pass file descriptors r=afranchuk    2025-07-04 18:55:06    d8a08af8244fa764b56a01bff985a799d2e194aa
+Bug 1964600 - Move the IPC waiting and connection logic directly into the server r=afranchuk    2025-07-04 18:55:06    8d6e237319bf6dfa12c079c324351cba139fd936
+Bug 1964600 - Remove the crash helper PID from the IPC connectors r=afranchuk    2025-07-04 18:55:06    0b2f2877c6f2cfbc4325714d407330cc2526abb8

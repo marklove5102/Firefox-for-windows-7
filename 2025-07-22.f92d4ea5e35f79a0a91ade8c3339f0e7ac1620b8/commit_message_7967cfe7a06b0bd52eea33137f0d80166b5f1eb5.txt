@@ -1,0 +1,1 @@
+Bug 1975853 - Fail gracefully if we cannot start the crash helper client r=afranchuk    2025-07-08 07:01:59    7967cfe7a06b0bd52eea33137f0d80166b5f1eb5
