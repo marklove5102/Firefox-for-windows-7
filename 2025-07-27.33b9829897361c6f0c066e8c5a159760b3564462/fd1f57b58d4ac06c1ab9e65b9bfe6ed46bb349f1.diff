@@ -1,0 +1,2691 @@
+diff --git a/devtools/server/tests/browser/browser_accessibility_node.js b/devtools/server/tests/browser/browser_accessibility_node.js
+index 327bf398fb79..7aff9d9a5d93 100644
+--- a/devtools/server/tests/browser/browser_accessibility_node.js
++++ b/devtools/server/tests/browser/browser_accessibility_node.js
+@@ -43,7 +43,6 @@ add_task(async function () {
+       tag: "button",
+       "margin-right": "0px",
+       id: "button",
+-      formatting: "block",
+       "margin-bottom": "0px",
+     },
+   });
+diff --git a/devtools/server/tests/browser/browser_accessibility_node_events.js b/devtools/server/tests/browser/browser_accessibility_node_events.js
+index e4226164c08d..85b309724741 100644
+--- a/devtools/server/tests/browser/browser_accessibility_node_events.js
++++ b/devtools/server/tests/browser/browser_accessibility_node_events.js
+@@ -48,7 +48,6 @@ add_task(async function () {
+       tag: "button",
+       "margin-right": "0px",
+       id: "button",
+-      formatting: "block",
+       "margin-bottom": "0px",
+     },
+   });
+@@ -108,7 +107,6 @@ add_task(async function () {
+           display: "inline-block",
+           "explicit-name": "true",
+           id: "button",
+-          formatting: "block",
+           live: "polite",
+           "margin-bottom": "0px",
+           "margin-left": "0px",
+diff --git a/layout/base/RestyleManager.cpp b/layout/base/RestyleManager.cpp
+index 63cca5f70c7f..14327a478119 100644
+--- a/layout/base/RestyleManager.cpp
++++ b/layout/base/RestyleManager.cpp
+@@ -1145,9 +1145,12 @@ static nsIFrame* ContainingBlockForFrame(nsIFrame* aFrame) {
+   if (aFrame->IsScrollContainerFrame()) {
+     return insertionFrame;
+   }
+-  // Table cell frames are also easy because the containing block is
++  // Combobox frames are easy as well because they can't have positioned
++  // children anyways.
++  // Button and table cell frames are also easy because the containing block is
+   // the frame itself.
+-  if (aFrame->IsTableCellFrame()) {
++  if (aFrame->IsComboboxControlFrame() || aFrame->IsHTMLButtonControlFrame() ||
++      aFrame->IsTableCellFrame()) {
+     return aFrame;
+   }
+   return nullptr;
+diff --git a/layout/base/nsCSSFrameConstructor.cpp b/layout/base/nsCSSFrameConstructor.cpp
+index 79e8f3e7f13a..f0a0c0c4c0b4 100644
+--- a/layout/base/nsCSSFrameConstructor.cpp
++++ b/layout/base/nsCSSFrameConstructor.cpp
+@@ -169,7 +169,6 @@ nsIFrame* NS_NewSVGFEUnstyledLeafFrame(PresShell* aPresShell,
+ nsIFrame* NS_NewFileControlLabelFrame(PresShell*, ComputedStyle*);
+ nsIFrame* NS_NewComboboxLabelFrame(PresShell*, ComputedStyle*);
+ nsIFrame* NS_NewMiddleCroppingLabelFrame(PresShell*, ComputedStyle*);
+-nsIFrame* NS_NewInputButtonControlFrame(PresShell*, ComputedStyle*);
+ 
+ #include "mozilla/dom/NodeInfo.h"
+ #include "nsContentCreatorFunctions.h"
+@@ -3047,7 +3046,8 @@ nsCSSFrameConstructor::FindSelectData(const Element& aElement,
+   MOZ_ASSERT(sel);
+   if (sel->IsCombobox()) {
+     static constexpr FrameConstructionData sComboboxData{
+-        ToCreationFunc(NS_NewComboboxControlFrame)};
++        ToCreationFunc(NS_NewComboboxControlFrame), 0,
++        PseudoStyleType::buttonContent};
+     return &sComboboxData;
+   }
+   // FIXME: Can we simplify this to avoid needing ConstructListboxSelectFrame,
+@@ -3501,7 +3501,8 @@ nsCSSFrameConstructor::FindHTMLData(const Element& aElement,
+             NS_NewFileControlLabelFrame);
+         return &sFileLabelData;
+       }
+-      if (aParentFrame->IsComboboxControlFrame()) {
++      if (aParentFrame->GetParent() &&
++          aParentFrame->GetParent()->IsComboboxControlFrame()) {
+         static constexpr FrameConstructionData sComboboxLabelData(
+             NS_NewComboboxLabelFrame);
+         return &sComboboxLabelData;
+@@ -3522,7 +3523,6 @@ nsCSSFrameConstructor::FindHTMLData(const Element& aElement,
+       {nsGkAtoms::br,
+        {NS_NewBRFrame, FCDATA_IS_LINE_PARTICIPANT | FCDATA_IS_LINE_BREAK}},
+       SIMPLE_TAG_CREATE(wbr, NS_NewWBRFrame),
+-      SIMPLE_TAG_CHAIN(button, nsCSSFrameConstructor::FindHTMLButtonData),
+       SIMPLE_TAG_CHAIN(input, nsCSSFrameConstructor::FindInputData),
+       SIMPLE_TAG_CREATE(textarea, NS_NewTextControlFrame),
+       SIMPLE_TAG_CHAIN(select, nsCSSFrameConstructor::FindSelectData),
+@@ -3532,6 +3532,10 @@ nsCSSFrameConstructor::FindHTMLData(const Element& aElement,
+                          &nsCSSFrameConstructor::ConstructFieldSetFrame),
+       SIMPLE_TAG_CREATE(frameset, NS_NewHTMLFramesetFrame),
+       SIMPLE_TAG_CREATE(iframe, NS_NewSubDocumentFrame),
++      {nsGkAtoms::button,
++       {ToCreationFunc(NS_NewHTMLButtonControlFrame),
++        FCDATA_ALLOW_BLOCK_STYLES | FCDATA_ALLOW_GRID_FLEX_COLUMN,
++        PseudoStyleType::buttonContent}},
+       SIMPLE_TAG_CHAIN(canvas, nsCSSFrameConstructor::FindCanvasData),
+       SIMPLE_TAG_CREATE(video, NS_NewHTMLVideoFrame),
+       SIMPLE_TAG_CREATE(audio, NS_NewHTMLAudioFrame),
+@@ -3564,38 +3568,6 @@ nsCSSFrameConstructor::FindGeneratedImageData(const Element& aElement,
+   return &sImgData;
+ }
+ 
+-const nsCSSFrameConstructor::FrameConstructionData*
+-nsCSSFrameConstructor::FindHTMLButtonData(const Element&,
+-                                          ComputedStyle& aStyle) {
+-  // Buttons force a (maybe inline) block unless their display is flex or grid.
+-  // TODO(emilio): It'd be good to remove this restriction more broadly.
+-  // There are some tests that expect block baselines on e.g. a `display: table`
+-  // button, but seems like it would be doable.
+-  const auto* disp = aStyle.StyleDisplay();
+-  const bool respectDisplay = [&] {
+-    if (disp->IsInlineFlow()) {
+-      // For compat, `display: inline` and co need to create an inline-block.
+-      return false;
+-    }
+-    switch (disp->DisplayInside()) {
+-      case StyleDisplayInside::Flex:
+-      case StyleDisplayInside::Grid:
+-      case StyleDisplayInside::FlowRoot:
+-        return true;
+-      default:
+-        return false;
+-    }
+-  }();
+-  if (respectDisplay) {
+-    return nullptr;
+-  }
+-  static constexpr FrameConstructionData sBlockData[2] = {
+-      {&nsCSSFrameConstructor::ConstructNonScrollableBlock},
+-      {&nsCSSFrameConstructor::ConstructScrollableBlock},
+-  };
+-  return &sBlockData[disp->IsScrollableOverflow()];
+-}
+-
+ /* static */
+ const nsCSSFrameConstructor::FrameConstructionData*
+ nsCSSFrameConstructor::FindImgData(const Element& aElement,
+@@ -3661,7 +3633,9 @@ nsCSSFrameConstructor::FindInputData(const Element& aElement,
+       SIMPLE_INT_CREATE(FormControlType::InputUrl, NS_NewTextControlFrame),
+       SIMPLE_INT_CREATE(FormControlType::InputRange, NS_NewRangeFrame),
+       SIMPLE_INT_CREATE(FormControlType::InputPassword, NS_NewTextControlFrame),
+-      SIMPLE_INT_CREATE(FormControlType::InputColor, NS_NewColorControlFrame),
++      {int32_t(FormControlType::InputColor),
++       {NS_NewColorControlFrame, 0, PseudoStyleType::buttonContent}},
++
+       SIMPLE_INT_CHAIN(FormControlType::InputSearch,
+                        nsCSSFrameConstructor::FindSearchControlData),
+       SIMPLE_INT_CREATE(FormControlType::InputNumber, NS_NewNumberControlFrame),
+@@ -3673,12 +3647,15 @@ nsCSSFrameConstructor::FindInputData(const Element& aElement,
+       SIMPLE_INT_CREATE(FormControlType::InputMonth, NS_NewTextControlFrame),
+       // TODO: this is temporary until a frame is written: bug 888320
+       SIMPLE_INT_CREATE(FormControlType::InputWeek, NS_NewTextControlFrame),
+-      SIMPLE_INT_CREATE(FormControlType::InputSubmit,
+-                        NS_NewInputButtonControlFrame),
+-      SIMPLE_INT_CREATE(FormControlType::InputReset,
+-                        NS_NewInputButtonControlFrame),
+-      SIMPLE_INT_CREATE(FormControlType::InputButton,
+-                        NS_NewInputButtonControlFrame),
++      {int32_t(FormControlType::InputSubmit),
++       {ToCreationFunc(NS_NewGfxButtonControlFrame), 0,
++        PseudoStyleType::buttonContent}},
++      {int32_t(FormControlType::InputReset),
++       {ToCreationFunc(NS_NewGfxButtonControlFrame), 0,
++        PseudoStyleType::buttonContent}},
++      {int32_t(FormControlType::InputButton),
++       {ToCreationFunc(NS_NewGfxButtonControlFrame), 0,
++        PseudoStyleType::buttonContent}}
+       // Keeping hidden inputs out of here on purpose for so they get frames by
+       // display (in practice, none).
+   };
+@@ -3782,6 +3759,9 @@ void nsCSSFrameConstructor::ConstructFrameFromItemInternal(
+   MOZ_ASSERT(
+       !(bits & FCDATA_IS_WRAPPER_ANON_BOX) || (bits & FCDATA_USE_CHILD_ITEMS),
+       "Wrapper anon boxes should always have FCDATA_USE_CHILD_ITEMS");
++  MOZ_ASSERT(!(bits & FCDATA_ALLOW_GRID_FLEX_COLUMN) ||
++                 (bits & FCDATA_CREATE_BLOCK_WRAPPER_FOR_ALL_KIDS),
++             "Need the block wrapper bit to create grid/flex/column.");
+ 
+   // Don't create a subdocument frame for iframes if we're creating extra frames
+   if (aState.mCreatingExtraFrames &&
+@@ -3839,9 +3819,37 @@ void nsCSSFrameConstructor::ConstructFrameFromItemInternal(
+       MOZ_ASSERT(containerFrame);
+ #endif
+       nsContainerFrame* container = static_cast<nsContainerFrame*>(newFrame);
+-      nsContainerFrame* innerFrame = NS_NewBlockFrame(mPresShell, outerStyle);
+-      InitAndRestoreFrame(aState, content, container, innerFrame);
+-      outerFrame = innerFrame;
++      nsContainerFrame* innerFrame;
++      if (bits & FCDATA_ALLOW_GRID_FLEX_COLUMN) {
++        switch (display->DisplayInside()) {
++          case StyleDisplayInside::Flex:
++            outerFrame = NS_NewFlexContainerFrame(mPresShell, outerStyle);
++            InitAndRestoreFrame(aState, content, container, outerFrame);
++            innerFrame = outerFrame;
++            break;
++          case StyleDisplayInside::Grid:
++            outerFrame = NS_NewGridContainerFrame(mPresShell, outerStyle);
++            InitAndRestoreFrame(aState, content, container, outerFrame);
++            innerFrame = outerFrame;
++            break;
++          default: {
++            innerFrame = NS_NewBlockFrame(mPresShell, outerStyle);
++            if (outerStyle->StyleColumn()->IsColumnContainerStyle()) {
++              outerFrame = BeginBuildingColumns(aState, content, container,
++                                                innerFrame, outerStyle);
++            } else {
++              // No need to create column container. Initialize innerFrame.
++              InitAndRestoreFrame(aState, content, container, innerFrame);
++              outerFrame = innerFrame;
++            }
++            break;
++          }
++        }
++      } else {
++        innerFrame = NS_NewBlockFrame(mPresShell, outerStyle);
++        InitAndRestoreFrame(aState, content, container, innerFrame);
++        outerFrame = innerFrame;
++      }
+ 
+       SetInitialSingleChild(container, outerFrame);
+ 
+@@ -3930,10 +3938,34 @@ void nsCSSFrameConstructor::ConstructFrameFromItemInternal(
+         childList = std::move(newList);
+       }
+ 
+-      // Set the frame's initial child list. Note that MathML depends on this
+-      // being called even if childList is empty!
+-      newFrameAsContainer->SetInitialChildList(FrameChildListID::Principal,
+-                                               std::move(childList));
++      if (!(bits & FCDATA_ALLOW_GRID_FLEX_COLUMN) ||
++          !MayNeedToCreateColumnSpanSiblings(newFrameAsContainer, childList)) {
++        // Set the frame's initial child list. Note that MathML depends on this
++        // being called even if childList is empty!
++        newFrameAsContainer->SetInitialChildList(FrameChildListID::Principal,
++                                                 std::move(childList));
++      } else {
++        // Extract any initial non-column-span kids, and put them in inner
++        // frame's child list.
++        nsFrameList initialNonColumnSpanKids =
++            childList.Split([](nsIFrame* f) { return f->IsColumnSpan(); });
++        newFrameAsContainer->SetInitialChildList(
++            FrameChildListID::Principal, std::move(initialNonColumnSpanKids));
++
++        if (childList.NotEmpty()) {
++          nsFrameList columnSpanSiblings = CreateColumnSpanSiblings(
++              aState, newFrameAsContainer, childList,
++              // Column content should never be a absolute/fixed positioned
++              // containing block. Pass nullptr as aPositionedFrame.
++              nullptr);
++
++          MOZ_ASSERT(outerFrame,
++                     "outerFrame should be non-null if multi-column container "
++                     "is created.");
++          FinishBuildingColumns(aState, outerFrame, newFrameAsContainer,
++                                columnSpanSiblings);
++        }
++      }
+     }
+   }
+ 
+diff --git a/layout/base/nsCSSFrameConstructor.h b/layout/base/nsCSSFrameConstructor.h
+index 1008b4e38f03..3df811f5c169 100644
+--- a/layout/base/nsCSSFrameConstructor.h
++++ b/layout/base/nsCSSFrameConstructor.h
+@@ -719,7 +719,6 @@ class nsCSSFrameConstructor final : public nsFrameManager {
+      This can be used with or without FCDATA_FUNC_IS_FULL_CTOR.
+      The child items might still need table pseudo processing. */
+ #define FCDATA_USE_CHILD_ITEMS 0x10000
+-  // 0x200000 is free
+   /* If FCDATA_CREATE_BLOCK_WRAPPER_FOR_ALL_KIDS is set, then create a
+      block formatting context wrapper around the kids of this frame
+      using the FrameConstructionData's mPseudoAtom for its anonymous
+@@ -728,6 +727,13 @@ class nsCSSFrameConstructor final : public nsFrameManager {
+   /* If FCDATA_IS_SVG_TEXT is set, then this text frame is a descendant of
+      an SVG text frame. */
+ #define FCDATA_IS_SVG_TEXT 0x80000
++  /**
++   * If FCDATA_ALLOW_GRID_FLEX_COLUMN is set, then we should create a
++   * grid/flex/column container instead of a block wrapper when the styles says
++   * so. This bit is meaningful only if FCDATA_CREATE_BLOCK_WRAPPER_FOR_ALL_KIDS
++   * is also set.
++   */
++#define FCDATA_ALLOW_GRID_FLEX_COLUMN 0x200000
+   /**
+    * Whether the kids of this FrameConstructionData should be flagged as having
+    * a wrapper anon box parent.  This should only be set if
+@@ -1428,8 +1434,6 @@ class nsCSSFrameConstructor final : public nsFrameManager {
+                                                      ComputedStyle&);
+   static const FrameConstructionData* FindImgData(const Element&,
+                                                   ComputedStyle&);
+-  static const FrameConstructionData* FindHTMLButtonData(const Element&,
+-                                                         ComputedStyle&);
+   static const FrameConstructionData* FindGeneratedImageData(const Element&,
+                                                              ComputedStyle&);
+   static const FrameConstructionData* FindImgControlData(const Element&,
+diff --git a/layout/forms/ButtonControlFrame.cpp b/layout/forms/ButtonControlFrame.cpp
+deleted file mode 100644
+index 0469167df9d2..000000000000
+--- a/layout/forms/ButtonControlFrame.cpp
++++ /dev/null
+@@ -1,55 +0,0 @@
+-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
+-/* This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this
+- * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+-
+-#include "ButtonControlFrame.h"
+-
+-/* Abstract base class for special button frames (but not <button>) */
+-
+-using namespace mozilla;
+-
+-namespace mozilla {
+-
+-NS_QUERYFRAME_HEAD(ButtonControlFrame)
+-  NS_QUERYFRAME_ENTRY(nsIAnonymousContentCreator)
+-  NS_QUERYFRAME_ENTRY(ButtonControlFrame)
+-NS_QUERYFRAME_TAIL_INHERITING(nsBlockFrame)
+-
+-void ButtonControlFrame::EnsureNonEmptyLabel(nsAString& aLabel) {
+-  if (aLabel.IsEmpty()) {
+-    // Have to use a space character of some sort for line-block-size
+-    // calculations to be right. Also, the space character must be zero-width in
+-    // order for the inline-size calculations to be consistent between
+-    // size-contained comboboxes vs. empty comboboxes.
+-    //
+-    // XXXdholbert Does this space need to be "non-breaking"? I'm not sure if it
+-    // matters, but we previously had a comment here (added in 2002) saying
+-    // "Have to use a non-breaking space for line-height calculations to be
+-    // right". So I'll stick with a non-breaking space for now...
+-    aLabel = u"\ufeff"_ns;
+-  }
+-}
+-
+-nsresult ButtonControlFrame::HandleEvent(nsPresContext* aPresContext,
+-                                         WidgetGUIEvent* aEvent,
+-                                         nsEventStatus* aEventStatus) {
+-  // Override HandleEvent to prevent the inherited version from being called
+-  // when disabled.
+-  if (IsContentDisabled()) {
+-    return nsBlockFrame::HandleEvent(aPresContext, aEvent, aEventStatus);
+-  }
+-  return NS_OK;
+-}
+-
+-void ButtonControlFrame::Reflow(nsPresContext* aPc, ReflowOutput& aReflowOutput,
+-                                const ReflowInput& aReflowInput,
+-                                nsReflowStatus& aStatus) {
+-  nsBlockFrame::Reflow(aPc, aReflowOutput, aReflowInput, aStatus);
+-  // We're always complete and we don't support overflow containers
+-  // so we shouldn't have a next-in-flow ever.
+-  aStatus.Reset();
+-}
+-
+-}  // namespace mozilla
+diff --git a/layout/forms/ButtonControlFrame.h b/layout/forms/ButtonControlFrame.h
+deleted file mode 100644
+index 6a1b016172f3..000000000000
+--- a/layout/forms/ButtonControlFrame.h
++++ /dev/null
+@@ -1,53 +0,0 @@
+-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
+-/* This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this
+- * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+-
+-#ifndef LAYOUT_FORMS_BUTTONCONTROLFRAME_H_
+-#define LAYOUT_FORMS_BUTTONCONTROLFRAME_H_
+-
+-#include "nsBlockFrame.h"
+-#include "nsIAnonymousContentCreator.h"
+-
+-class nsTextNode;
+-
+-namespace mozilla {
+-
+-// Abstract base class for:
+-//  * Combobox <select>
+-//  * <input> with type={button,reset,submit}
+-//  * <input> with type=color
+-// Each of which are basically buttons but with different native-anonymous
+-// content. Note that this isn't used to implement <button> itself (that uses
+-// regular frames like nsBlockFrame or nsGridContainerFrame or so, depending on
+-// the display type).
+-class ButtonControlFrame : public nsBlockFrame,
+-                           public nsIAnonymousContentCreator {
+- public:
+-  NS_DECL_QUERYFRAME_TARGET(ButtonControlFrame)
+-  NS_DECL_QUERYFRAME
+-  NS_DECL_ABSTRACT_FRAME(ButtonControlFrame)
+-
+-  ButtonControlFrame(ComputedStyle* aStyle, nsPresContext* aPc,
+-                     ClassID aClassID)
+-      : nsBlockFrame(aStyle, aPc, aClassID) {
+-    MOZ_ASSERT(IsReplaced(), "Our subclasses should be replaced elements");
+-  }
+-  nsContainerFrame* GetContentInsertionFrame() override { return this; }
+-  nsresult HandleEvent(nsPresContext* aPresContext,
+-                       mozilla::WidgetGUIEvent* aEvent,
+-                       nsEventStatus* aEventStatus) override;
+-
+-  void Reflow(nsPresContext*, ReflowOutput&, const ReflowInput&,
+-              nsReflowStatus&) override;
+-
+-  // Given a string of text (for the button label), ensure it's not empty so
+-  // that line height computations work (inserting a zero-width character if
+-  // necessary).
+-  static void EnsureNonEmptyLabel(nsAString&);
+-};
+-
+-}  // namespace mozilla
+-
+-#endif  // LAYOUT_FORMS_BUTTONCONTROLFRAME_H_
+diff --git a/layout/forms/moz.build b/layout/forms/moz.build
+index 4635f312b822..8404e1bcc302 100644
+--- a/layout/forms/moz.build
++++ b/layout/forms/moz.build
+@@ -15,9 +15,7 @@ EXPORTS += [
+ ]
+ 
+ UNIFIED_SOURCES += [
+-    "ButtonControlFrame.cpp",
+     "HTMLSelectEventListener.cpp",
+-    "InputButtonControlFrame.cpp",
+     "ListMutationObserver.cpp",
+     "nsCheckboxRadioFrame.cpp",
+     "nsColorControlFrame.cpp",
+@@ -25,6 +23,8 @@ UNIFIED_SOURCES += [
+     "nsDateTimeControlFrame.cpp",
+     "nsFieldSetFrame.cpp",
+     "nsFileControlFrame.cpp",
++    "nsGfxButtonControlFrame.cpp",
++    "nsHTMLButtonControlFrame.cpp",
+     "nsImageControlFrame.cpp",
+     "nsListControlFrame.cpp",
+     "nsNumberControlFrame.cpp",
+diff --git a/layout/forms/nsColorControlFrame.cpp b/layout/forms/nsColorControlFrame.cpp
+index 43e851a1a163..f519838624ab 100644
+--- a/layout/forms/nsColorControlFrame.cpp
++++ b/layout/forms/nsColorControlFrame.cpp
+@@ -9,6 +9,7 @@
+ #include "mozilla/PresShell.h"
+ #include "mozilla/dom/Document.h"
+ #include "mozilla/dom/HTMLInputElement.h"
++#include "nsCSSPseudoElements.h"
+ #include "nsContentCreatorFunctions.h"
+ #include "nsContentUtils.h"
+ #include "nsGkAtoms.h"
+@@ -16,11 +17,13 @@
+ 
+ using namespace mozilla;
+ using mozilla::dom::CallerType;
++using mozilla::dom::Document;
++using mozilla::dom::Element;
+ using mozilla::dom::HTMLInputElement;
+ 
+ nsColorControlFrame::nsColorControlFrame(ComputedStyle* aStyle,
+                                          nsPresContext* aPresContext)
+-    : ButtonControlFrame(aStyle, aPresContext, kClassID) {}
++    : nsHTMLButtonControlFrame(aStyle, aPresContext, kClassID) {}
+ 
+ nsIFrame* NS_NewColorControlFrame(PresShell* aPresShell,
+                                   ComputedStyle* aStyle) {
+@@ -32,23 +35,38 @@ NS_IMPL_FRAMEARENA_HELPERS(nsColorControlFrame)
+ 
+ NS_QUERYFRAME_HEAD(nsColorControlFrame)
+   NS_QUERYFRAME_ENTRY(nsColorControlFrame)
+-NS_QUERYFRAME_TAIL_INHERITING(ButtonControlFrame)
++  NS_QUERYFRAME_ENTRY(nsIAnonymousContentCreator)
++NS_QUERYFRAME_TAIL_INHERITING(nsHTMLButtonControlFrame)
+ 
+ void nsColorControlFrame::Destroy(DestroyContext& aContext) {
+   aContext.AddAnonymousContent(mColorContent.forget());
+-  ButtonControlFrame::Destroy(aContext);
++  nsHTMLButtonControlFrame::Destroy(aContext);
+ }
+ 
++#ifdef DEBUG_FRAME_DUMP
++nsresult nsColorControlFrame::GetFrameName(nsAString& aResult) const {
++  return MakeFrameName(u"ColorControl"_ns, aResult);
++}
++#endif
++
+ // Create the color area for the button.
+ // The frame will be generated by the frame constructor.
+ nsresult nsColorControlFrame::CreateAnonymousContent(
+     nsTArray<ContentInfo>& aElements) {
+-  mColorContent = mContent->OwnerDoc()->CreateHTMLElement(nsGkAtoms::div);
++  RefPtr<Document> doc = mContent->GetComposedDoc();
++  mColorContent = doc->CreateHTMLElement(nsGkAtoms::div);
+   mColorContent->SetPseudoElementType(PseudoStyleType::mozColorSwatch);
++
+   // Mark the element to be native anonymous before setting any attributes.
+   mColorContent->SetIsNativeAnonymousRoot();
+-  UpdateColor();
++
++  nsresult rv = UpdateColor();
++  NS_ENSURE_SUCCESS(rv, rv);
++
++  // XXX(Bug 1631371) Check if this should use a fallible operation as it
++  // pretended earlier.
+   aElements.AppendElement(mColorContent);
++
+   return NS_OK;
+ }
+ 
+@@ -59,11 +77,11 @@ void nsColorControlFrame::AppendAnonymousContentTo(
+   }
+ }
+ 
+-void nsColorControlFrame::UpdateColor() {
++nsresult nsColorControlFrame::UpdateColor() {
+   // Get the color from the "value" property of our content; it will return the
+   // default color (through the sanitization algorithm) if the value is empty.
+   nsAutoString color;
+-  auto* elt = HTMLInputElement::FromNode(mContent);
++  HTMLInputElement* elt = HTMLInputElement::FromNode(mContent);
+   elt->GetValue(color, CallerType::System);
+ 
+   if (color.IsEmpty()) {
+@@ -79,13 +97,13 @@ void nsColorControlFrame::UpdateColor() {
+                "Content node's GetValue() should return a valid color string "
+                "by the time we've been reflowed (the default color, in case "
+                "no valid color is set)");
+-    return;
++    return NS_OK;
+   }
+ 
+   // Set the background-color CSS property of the swatch element to this color.
+-  mColorContent->SetAttr(kNameSpaceID_None, nsGkAtoms::style,
+-                         u"background-color:"_ns + color,
+-                         /* aNotify */ true);
++  return mColorContent->SetAttr(kNameSpaceID_None, nsGkAtoms::style,
++                                u"background-color:"_ns + color,
++                                /* aNotify */ true);
+ }
+ 
+ nsresult nsColorControlFrame::AttributeChanged(int32_t aNameSpaceID,
+@@ -101,6 +119,10 @@ nsresult nsColorControlFrame::AttributeChanged(int32_t aNameSpaceID,
+       aNameSpaceID == kNameSpaceID_None && nsGkAtoms::value == aAttribute) {
+     UpdateColor();
+   }
+-  return ButtonControlFrame::AttributeChanged(aNameSpaceID, aAttribute,
+-                                              aModType);
++  return nsHTMLButtonControlFrame::AttributeChanged(aNameSpaceID, aAttribute,
++                                                    aModType);
++}
++
++nsContainerFrame* nsColorControlFrame::GetContentInsertionFrame() {
++  return this;
+ }
+diff --git a/layout/forms/nsColorControlFrame.h b/layout/forms/nsColorControlFrame.h
+index 3daad2075fb0..736f8e381554 100644
+--- a/layout/forms/nsColorControlFrame.h
++++ b/layout/forms/nsColorControlFrame.h
+@@ -7,16 +7,20 @@
+ #ifndef nsColorControlFrame_h___
+ #define nsColorControlFrame_h___
+ 
+-#include "ButtonControlFrame.h"
+ #include "nsCOMPtr.h"
++#include "nsHTMLButtonControlFrame.h"
++#include "nsIAnonymousContentCreator.h"
+ 
+ namespace mozilla {
++enum class PseudoStyleType : uint8_t;
+ class PresShell;
+ }  // namespace mozilla
+ 
+ // Class which implements the input type=color
+ 
+-class nsColorControlFrame final : public mozilla::ButtonControlFrame {
++class nsColorControlFrame final : public nsHTMLButtonControlFrame,
++                                  public nsIAnonymousContentCreator {
++  typedef mozilla::PseudoStyleType PseudoStyleType;
+   typedef mozilla::dom::Element Element;
+ 
+  public:
+@@ -29,9 +33,7 @@ class nsColorControlFrame final : public mozilla::ButtonControlFrame {
+   NS_DECL_FRAMEARENA_HELPERS(nsColorControlFrame)
+ 
+ #ifdef DEBUG_FRAME_DUMP
+-  nsresult GetFrameName(nsAString& aResult) const override {
+-    return MakeFrameName(u"ColorControl"_ns, aResult);
+-  }
++  nsresult GetFrameName(nsAString& aResult) const override;
+ #endif
+ 
+   // nsIAnonymousContentCreator
+@@ -42,12 +44,14 @@ class nsColorControlFrame final : public mozilla::ButtonControlFrame {
+   // nsIFrame
+   nsresult AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
+                             int32_t aModType) override;
++  nsContainerFrame* GetContentInsertionFrame() override;
+ 
+   // Refresh the color swatch, using associated input's value
+-  void UpdateColor();
++  nsresult UpdateColor();
+ 
+  private:
+-  nsColorControlFrame(ComputedStyle*, nsPresContext*);
++  explicit nsColorControlFrame(ComputedStyle* aStyle,
++                               nsPresContext* aPresContext);
+ 
+   nsCOMPtr<Element> mColorContent;
+ };
+diff --git a/layout/forms/nsComboboxControlFrame.cpp b/layout/forms/nsComboboxControlFrame.cpp
+index 76587c2f2f4b..65d5c00b2f66 100644
+--- a/layout/forms/nsComboboxControlFrame.cpp
++++ b/layout/forms/nsComboboxControlFrame.cpp
+@@ -13,20 +13,35 @@
+ #include "gfxUtils.h"
+ #include "mozilla/AsyncEventDispatcher.h"
+ #include "mozilla/Likely.h"
++#include "mozilla/LookAndFeel.h"
+ #include "mozilla/PresShell.h"
+ #include "mozilla/PresShellInlines.h"
++#include "mozilla/ServoStyleSet.h"
+ #include "mozilla/dom/Document.h"
++#include "mozilla/dom/Event.h"
+ #include "mozilla/dom/HTMLSelectElement.h"
+ #include "nsCOMPtr.h"
++#include "nsContentCreatorFunctions.h"
+ #include "nsContentUtils.h"
++#include "nsDeviceContext.h"
++#include "nsDisplayList.h"
++#include "nsFocusManager.h"
+ #include "nsGkAtoms.h"
++#include "nsHTMLParts.h"
++#include "nsIFormControl.h"
++#include "nsILayoutHistoryState.h"
+ #include "nsISelectControlFrame.h"
+ #include "nsITheme.h"
+ #include "nsLayoutUtils.h"
++#include "nsListControlFrame.h"
++#include "nsNodeInfoManager.h"
++#include "nsPIDOMWindow.h"
+ #include "nsStyleConsts.h"
+ #include "nsTextFrameUtils.h"
+ #include "nsTextNode.h"
+ #include "nsTextRunTransformations.h"
++#include "nsView.h"
++#include "nsViewManager.h"
+ 
+ using namespace mozilla;
+ using namespace mozilla::gfx;
+@@ -53,22 +68,24 @@ nsComboboxControlFrame::RedisplayTextEvent::Run() {
+ 
+ nsComboboxControlFrame* NS_NewComboboxControlFrame(PresShell* aPresShell,
+                                                    ComputedStyle* aStyle) {
+-  return new (aPresShell)
++  nsComboboxControlFrame* it = new (aPresShell)
+       nsComboboxControlFrame(aStyle, aPresShell->GetPresContext());
++  return it;
+ }
+ 
+ NS_IMPL_FRAMEARENA_HELPERS(nsComboboxControlFrame)
+ 
+ nsComboboxControlFrame::nsComboboxControlFrame(ComputedStyle* aStyle,
+                                                nsPresContext* aPresContext)
+-    : ButtonControlFrame(aStyle, aPresContext, kClassID) {}
++    : nsHTMLButtonControlFrame(aStyle, aPresContext, kClassID) {}
+ 
+ nsComboboxControlFrame::~nsComboboxControlFrame() = default;
+ 
+ NS_QUERYFRAME_HEAD(nsComboboxControlFrame)
+   NS_QUERYFRAME_ENTRY(nsComboboxControlFrame)
++  NS_QUERYFRAME_ENTRY(nsIAnonymousContentCreator)
+   NS_QUERYFRAME_ENTRY(nsISelectControlFrame)
+-NS_QUERYFRAME_TAIL_INHERITING(ButtonControlFrame)
++NS_QUERYFRAME_TAIL_INHERITING(nsHTMLButtonControlFrame)
+ 
+ #ifdef ACCESSIBILITY
+ a11y::AccType nsComboboxControlFrame::AccessibleType() {
+@@ -202,8 +219,7 @@ void nsComboboxControlFrame::Reflow(nsPresContext* aPresContext,
+                                     ReflowOutput& aDesiredSize,
+                                     const ReflowInput& aReflowInput,
+                                     nsReflowStatus& aStatus) {
+-  // We don't call MarkInReflow() here; that happens in our superclass's
+-  // implementation of Reflow (which we invoke further down).
++  MarkInReflow();
+   MOZ_ASSERT(aStatus.IsEmpty(), "Caller should pass a fresh reflow status!");
+   // Constraints we try to satisfy:
+ 
+@@ -219,7 +235,6 @@ void nsComboboxControlFrame::Reflow(nsPresContext* aPresContext,
+ 
+   // In dropped down mode the "selected index" is the hovered menu item,
+   // we want the last selected item which is |mDisplayedIndex| in this case.
+-  // FIXME(emilio): why is this needed here?
+   RedisplayText();
+ 
+   WritingMode wm = aReflowInput.GetWritingMode();
+@@ -237,13 +252,15 @@ void nsComboboxControlFrame::Reflow(nsPresContext* aPresContext,
+     mDisplayISize += padding.IEnd(wm);
+   }
+ 
+-  ButtonControlFrame::Reflow(aPresContext, aDesiredSize, aReflowInput, aStatus);
++  nsHTMLButtonControlFrame::Reflow(aPresContext, aDesiredSize, aReflowInput,
++                                   aStatus);
+ }
+ 
+ void nsComboboxControlFrame::Init(nsIContent* aContent,
+                                   nsContainerFrame* aParent,
+                                   nsIFrame* aPrevInFlow) {
+-  ButtonControlFrame::Init(aContent, aParent, aPrevInFlow);
++  nsHTMLButtonControlFrame::Init(aContent, aParent, aPrevInFlow);
++
+   mEventListener = new HTMLSelectEventListener(
+       Select(), HTMLSelectEventListener::SelectType::Combobox);
+ }
+@@ -258,39 +272,43 @@ nsresult nsComboboxControlFrame::RedisplaySelectedText() {
+ }
+ 
+ nsresult nsComboboxControlFrame::RedisplayText() {
+-  nsAutoString currentLabel;
+-  mDisplayLabel->GetFirstChild()->AsText()->GetData(currentLabel);
+-
+-  nsAutoString newLabel;
+-  GetLabelText(newLabel);
++  nsString previewValue;
++  nsString previousText(mDisplayedOptionTextOrPreview);
+ 
+-  // Revoke outstanding events to avoid out-of-order events which could mean
+-  // displaying the wrong text.
+-  mRedisplayTextEvent.Revoke();
+-
+-  if (currentLabel == newLabel) {
+-    return NS_OK;
++  Select().GetPreviewValue(previewValue);
++  // Get the text to display
++  if (!previewValue.IsEmpty()) {
++    mDisplayedOptionTextOrPreview = previewValue;
++  } else if (mDisplayedIndex != -1 && !StyleContent()->mContent.IsNone()) {
++    GetOptionText(mDisplayedIndex, mDisplayedOptionTextOrPreview);
++  } else {
++    mDisplayedOptionTextOrPreview.Truncate();
+   }
+ 
+-  NS_ASSERTION(!nsContentUtils::IsSafeToRunScript(),
+-               "If we happen to run our redisplay event now, we might kill "
+-               "ourselves!");
+-  mRedisplayTextEvent = new RedisplayTextEvent(this);
+-  nsContentUtils::AddScriptRunner(mRedisplayTextEvent.get());
+-  return NS_OK;
+-}
+-
+-void nsComboboxControlFrame::UpdateLabelText() {
+-  RefPtr<dom::Text> displayContent = mDisplayLabel->GetFirstChild()->AsText();
+-  nsAutoString newLabel;
+-  GetLabelText(newLabel);
+-  displayContent->SetText(newLabel, true);
++  // Send reflow command because the new text maybe larger
++  nsresult rv = NS_OK;
++  if (!previousText.Equals(mDisplayedOptionTextOrPreview)) {
++    // Don't call ActuallyDisplayText(true) directly here since that could cause
++    // recursive frame construction. See bug 283117 and the comment in
++    // HandleRedisplayTextEvent() below.
++
++    // Revoke outstanding events to avoid out-of-order events which could mean
++    // displaying the wrong text.
++    mRedisplayTextEvent.Revoke();
++
++    NS_ASSERTION(!nsContentUtils::IsSafeToRunScript(),
++                 "If we happen to run our redisplay event now, we might kill "
++                 "ourselves!");
++    mRedisplayTextEvent = new RedisplayTextEvent(this);
++    nsContentUtils::AddScriptRunner(mRedisplayTextEvent.get());
++  }
++  return rv;
+ }
+ 
+ void nsComboboxControlFrame::HandleRedisplayTextEvent() {
+   // First, make sure that the content model is up to date and we've constructed
+   // the frames for all our content in the right places. Otherwise they'll end
+-  // up under the wrong insertion frame when we UpdateLabel, since that
++  // up under the wrong insertion frame when we ActuallyDisplayText, since that
+   // flushes out the content sink by calling SetText on a DOM node with aNotify
+   // set to true.  See bug 289730.
+   AutoWeakFrame weakThis(this);
+@@ -300,20 +318,25 @@ void nsComboboxControlFrame::HandleRedisplayTextEvent() {
+     return;
+   }
+   mRedisplayTextEvent.Forget();
+-  UpdateLabelText();
++  ActuallyDisplayText(true);
+   // Note: `this` might be dead here.
+ }
+ 
+-void nsComboboxControlFrame::GetLabelText(nsAString& aLabel) {
+-  Select().GetPreviewValue(aLabel);
+-  // Get the text to display
+-  if (!aLabel.IsEmpty()) {
+-    return;
+-  }
+-  if (mDisplayedIndex != -1 && !StyleContent()->mContent.IsNone()) {
+-    GetOptionText(mDisplayedIndex, aLabel);
+-  }
+-  EnsureNonEmptyLabel(aLabel);
++void nsComboboxControlFrame::ActuallyDisplayText(bool aNotify) {
++  RefPtr<dom::Text> displayContent = mDisplayLabel->GetFirstChild()->AsText();
++  // Have to use a space character of some sort for line-block-size calculations
++  // to be right. Also, the space character must be zero-width in order for the
++  // inline-size calculations to be consistent between size-contained comboboxes
++  // vs. empty comboboxes.
++  //
++  // XXXdholbert Does this space need to be "non-breaking"? I'm not sure if it
++  // matters, but we previously had a comment here (added in 2002) saying "Have
++  // to use a non-breaking space for line-height calculations to be right". So
++  // I'll stick with a non-breaking space for now...
++  displayContent->SetText(mDisplayedOptionTextOrPreview.IsEmpty()
++                              ? u"\ufeff"_ns
++                              : mDisplayedOptionTextOrPreview,
++                          aNotify);
+ }
+ 
+ bool nsComboboxControlFrame::IsDroppedDown() const {
+@@ -372,21 +395,28 @@ nsresult nsComboboxControlFrame::HandleEvent(nsPresContext* aPresContext,
+     return NS_OK;
+   }
+ 
+-  return ButtonControlFrame::HandleEvent(aPresContext, aEvent, aEventStatus);
++  return nsHTMLButtonControlFrame::HandleEvent(aPresContext, aEvent,
++                                               aEventStatus);
+ }
+ 
+ nsresult nsComboboxControlFrame::CreateAnonymousContent(
+     nsTArray<ContentInfo>& aElements) {
+   dom::Document* doc = mContent->OwnerDoc();
+   mDisplayLabel = doc->CreateHTMLElement(nsGkAtoms::label);
++
+   {
+     RefPtr<nsTextNode> text = doc->CreateEmptyTextNode();
+     mDisplayLabel->AppendChildTo(text, false, IgnoreErrors());
+-    // set the value of the text node
+-    UpdateLabelText();
+   }
+-  aElements.AppendElement(mDisplayLabel);
+ 
++  // set the value of the text node
++  mDisplayedIndex = Select().SelectedIndex();
++  if (mDisplayedIndex != -1) {
++    GetOptionText(mDisplayedIndex, mDisplayedOptionTextOrPreview);
++  }
++  ActuallyDisplayText(false);
++
++  aElements.AppendElement(mDisplayLabel);
+   if (HasDropDownButton()) {
+     mButtonContent = mContent->OwnerDoc()->CreateHTMLElement(nsGkAtoms::button);
+     {
+@@ -451,7 +481,8 @@ void ComboboxLabelFrame::Reflow(nsPresContext* aPresContext,
+                                 nsReflowStatus& aStatus) {
+   MOZ_ASSERT(aStatus.IsEmpty(), "Caller should pass a fresh reflow status!");
+ 
+-  const nsComboboxControlFrame* combobox = do_QueryFrame(GetParent());
++  const nsComboboxControlFrame* combobox =
++      do_QueryFrame(GetParent()->GetParent());
+   MOZ_ASSERT(combobox, "Combobox's frame tree is wrong!");
+   MOZ_ASSERT(aReflowInput.ComputedPhysicalBorderPadding() == nsMargin(),
+              "We shouldn't have border and padding in UA!");
+@@ -477,7 +508,7 @@ void nsComboboxControlFrame::Destroy(DestroyContext& aContext) {
+ 
+   aContext.AddAnonymousContent(mDisplayLabel.forget());
+   aContext.AddAnonymousContent(mButtonContent.forget());
+-  ButtonControlFrame::Destroy(aContext);
++  nsHTMLButtonControlFrame::Destroy(aContext);
+ }
+ 
+ //---------------------------------------------------------
+diff --git a/layout/forms/nsComboboxControlFrame.h b/layout/forms/nsComboboxControlFrame.h
+index 077bfb827e73..8b20f5608ac9 100644
+--- a/layout/forms/nsComboboxControlFrame.h
++++ b/layout/forms/nsComboboxControlFrame.h
+@@ -7,8 +7,8 @@
+ #ifndef nsComboboxControlFrame_h___
+ #define nsComboboxControlFrame_h___
+ 
+-#include "ButtonControlFrame.h"
+ #include "mozilla/Attributes.h"
++#include "nsHTMLButtonControlFrame.h"
+ #include "nsIAnonymousContentCreator.h"
+ #include "nsIRollupListener.h"
+ #include "nsISelectControlFrame.h"
+@@ -23,7 +23,8 @@ class HTMLSelectElement;
+ }
+ }  // namespace mozilla
+ 
+-class nsComboboxControlFrame final : public mozilla::ButtonControlFrame,
++class nsComboboxControlFrame final : public nsHTMLButtonControlFrame,
++                                     public nsIAnonymousContentCreator,
+                                      public nsISelectControlFrame {
+   using Element = mozilla::dom::Element;
+ 
+@@ -47,8 +48,10 @@ class nsComboboxControlFrame final : public mozilla::ButtonControlFrame,
+ 
+   nscoord IntrinsicISize(const mozilla::IntrinsicSizeInput& aInput,
+                          mozilla::IntrinsicISizeType aType) final;
+-  void GetLabelText(nsAString&);
+-  void UpdateLabelText();
++
++  // We're a leaf, so we need to report ourselves as the content insertion
++  // frame.
++  nsContainerFrame* GetContentInsertionFrame() override { return this; }
+ 
+   void Reflow(nsPresContext* aCX, ReflowOutput& aDesiredSize,
+               const ReflowInput& aReflowInput, nsReflowStatus& aStatus) final;
+@@ -95,6 +98,16 @@ class nsComboboxControlFrame final : public mozilla::ButtonControlFrame,
+   bool HasDropDownButton() const;
+   nscoord DropDownButtonISize();
+ 
++  enum DropDownPositionState {
++    // can't show the dropdown at its current position
++    eDropDownPositionSuppressed,
++    // a resize reflow is pending, don't show it yet
++    eDropDownPositionPendingResize,
++    // the dropdown has its final size and position and can be displayed here
++    eDropDownPositionFinal
++  };
++  DropDownPositionState AbsolutelyPositionDropDown();
++
+   enum class Type { Longest, Current };
+   nscoord GetOptionISize(gfxContext*, Type) const;
+ 
+@@ -112,13 +125,11 @@ class nsComboboxControlFrame final : public mozilla::ButtonControlFrame,
+ 
+   nsresult RedisplayText();
+   void HandleRedisplayTextEvent();
++  void ActuallyDisplayText(bool aNotify);
+ 
+   mozilla::dom::HTMLSelectElement& Select() const;
+   void GetOptionText(uint32_t aIndex, nsAString& aText) const;
+ 
+-  // TODO(emilio): Would be nice to either paint the dropmarker as part of the
+-  // background somehow, or alternatively rejigger stuff a bit (using flex) so
+-  // that we can get rid of the label element.
+   RefPtr<Element> mDisplayLabel;   // Anonymous content for the label
+   RefPtr<Element> mButtonContent;  // Anonymous content for the button
+   nsRevocableEventPtr<RedisplayTextEvent> mRedisplayTextEvent;
+@@ -127,6 +138,7 @@ class nsComboboxControlFrame final : public mozilla::ButtonControlFrame,
+   // the full inline size except the drop-marker.
+   nscoord mDisplayISize = 0;
+   int32_t mDisplayedIndex = -1;
++  nsString mDisplayedOptionTextOrPreview;
+   RefPtr<mozilla::HTMLSelectEventListener> mEventListener;
+ };
+ 
+diff --git a/layout/forms/InputButtonControlFrame.cpp b/layout/forms/nsGfxButtonControlFrame.cpp
+similarity index 57%
+rename from layout/forms/InputButtonControlFrame.cpp
+rename to layout/forms/nsGfxButtonControlFrame.cpp
+index 1a1ec29d76e6..6280b1508151 100644
+--- a/layout/forms/InputButtonControlFrame.cpp
++++ b/layout/forms/nsGfxButtonControlFrame.cpp
+@@ -4,61 +4,47 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+-#include "ButtonControlFrame.h"
++#include "nsGfxButtonControlFrame.h"
++
+ #include "mozilla/PresShell.h"
+ #include "mozilla/dom/HTMLInputElement.h"
+ #include "nsContentUtils.h"
++#include "nsGkAtoms.h"
+ #include "nsIFormControl.h"
+ #include "nsTextNode.h"
+ 
+ using namespace mozilla;
+ 
+-namespace mozilla {
+-
+-/* A frame for <input type={button,reset,submit} */
+-class InputButtonControlFrame final : public ButtonControlFrame {
+- public:
+-  InputButtonControlFrame(ComputedStyle* aStyle, nsPresContext* aPc)
+-      : ButtonControlFrame(aStyle, aPc, kClassID) {}
+-
+-  NS_DECL_FRAMEARENA_HELPERS(InputButtonControlFrame)
+-
+-#ifdef DEBUG_FRAME_DUMP
+-  nsresult GetFrameName(nsAString& aResult) const override {
+-    return MakeFrameName(u"InputButtonControl"_ns, aResult);
+-  }
+-#endif
+-
+-  void Destroy(DestroyContext&) override;
++nsGfxButtonControlFrame::nsGfxButtonControlFrame(ComputedStyle* aStyle,
++                                                 nsPresContext* aPresContext)
++    : nsHTMLButtonControlFrame(aStyle, aPresContext, kClassID) {}
+ 
+-  // nsIAnonymousContentCreator
+-  nsresult CreateAnonymousContent(nsTArray<ContentInfo>&) override;
+-  void AppendAnonymousContentTo(nsTArray<nsIContent*>&,
+-                                uint32_t aFilter) override;
+-
+- protected:
+-  nsresult AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
+-                            int32_t aModType) override;
+-  void GetDefaultLabel(nsAString&) const;
+-  void GetLabel(nsAString& aLabel);
+-  void UpdateLabel();
+-
+-  RefPtr<nsTextNode> mTextContent;
+-};
++nsContainerFrame* NS_NewGfxButtonControlFrame(PresShell* aPresShell,
++                                              ComputedStyle* aStyle) {
++  return new (aPresShell)
++      nsGfxButtonControlFrame(aStyle, aPresShell->GetPresContext());
++}
+ 
+-NS_IMPL_FRAMEARENA_HELPERS(InputButtonControlFrame);
++NS_IMPL_FRAMEARENA_HELPERS(nsGfxButtonControlFrame)
+ 
+-void InputButtonControlFrame::Destroy(DestroyContext& aContext) {
++void nsGfxButtonControlFrame::Destroy(DestroyContext& aContext) {
+   aContext.AddAnonymousContent(mTextContent.forget());
+-  ButtonControlFrame::Destroy(aContext);
++  nsHTMLButtonControlFrame::Destroy(aContext);
++}
++
++#ifdef DEBUG_FRAME_DUMP
++nsresult nsGfxButtonControlFrame::GetFrameName(nsAString& aResult) const {
++  return MakeFrameName(u"ButtonControl"_ns, aResult);
+ }
++#endif
+ 
+ // Create the text content used as label for the button.
+ // The frame will be generated by the frame constructor.
+-nsresult InputButtonControlFrame::CreateAnonymousContent(
++nsresult nsGfxButtonControlFrame::CreateAnonymousContent(
+     nsTArray<ContentInfo>& aElements) {
+   nsAutoString label;
+-  GetLabel(label);
++  nsresult rv = GetLabel(label);
++  NS_ENSURE_SUCCESS(rv, rv);
+ 
+   // Add a child text content node for the label
+   mTextContent = new (mContent->NodeInfo()->NodeInfoManager())
+@@ -67,46 +53,47 @@ nsresult InputButtonControlFrame::CreateAnonymousContent(
+   // set the value of the text node and add it to the child list
+   mTextContent->SetText(label, false);
+   aElements.AppendElement(mTextContent);
++
+   return NS_OK;
+ }
+ 
+-void InputButtonControlFrame::AppendAnonymousContentTo(
++void nsGfxButtonControlFrame::AppendAnonymousContentTo(
+     nsTArray<nsIContent*>& aElements, uint32_t aFilter) {
+   if (mTextContent) {
+     aElements.AppendElement(mTextContent);
+   }
+ }
+ 
++NS_QUERYFRAME_HEAD(nsGfxButtonControlFrame)
++  NS_QUERYFRAME_ENTRY(nsIAnonymousContentCreator)
++NS_QUERYFRAME_TAIL_INHERITING(nsHTMLButtonControlFrame)
++
+ // Initially we hardcoded the default strings here.
+ // Next, we used html.css to store the default label for various types
+ // of buttons. (nsGfxButtonControlFrame::DoNavQuirksReflow rev 1.20)
+ // However, since html.css is not internationalized, we now grab the default
+ // label from a string bundle as is done for all other UI strings.
+ // See bug 16999 for further details.
+-void InputButtonControlFrame::GetDefaultLabel(nsAString& aLabel) const {
+-  const auto* form = nsIFormControl::FromNode(mContent);
+-  MOZ_ASSERT(form);
++nsresult nsGfxButtonControlFrame::GetDefaultLabel(nsAString& aString) const {
++  const auto* form = nsIFormControl::FromNodeOrNull(mContent);
++  NS_ENSURE_TRUE(form, NS_ERROR_UNEXPECTED);
+ 
+   auto type = form->ControlType();
+-  nsCString prop;
++  const char* prop;
+   if (type == FormControlType::InputReset) {
+-    prop.AssignLiteral("Reset");
++    prop = "Reset";
+   } else if (type == FormControlType::InputSubmit) {
+-    prop.AssignLiteral("Submit");
++    prop = "Submit";
+   } else {
+-    aLabel.Truncate();
+-    return;
++    aString.Truncate();
++    return NS_OK;
+   }
+ 
+-  if (NS_FAILED(nsContentUtils::GetMaybeLocalizedString(
+-          nsContentUtils::eFORMS_PROPERTIES, prop.get(), mContent->OwnerDoc(),
+-          aLabel))) {
+-    // Use the non-localized version.
+-    CopyUTF8toUTF16(prop, aLabel);
+-  }
++  return nsContentUtils::GetMaybeLocalizedString(
++      nsContentUtils::eFORMS_PROPERTIES, prop, mContent->OwnerDoc(), aString);
+ }
+ 
+-void InputButtonControlFrame::GetLabel(nsAString& aLabel) {
++nsresult nsGfxButtonControlFrame::GetLabel(nsString& aLabel) {
+   // Get the text from the "value" property on our content if there is
+   // one; otherwise set it to a default value (localized).
+   auto* elt = dom::HTMLInputElement::FromNode(mContent);
+@@ -117,7 +104,9 @@ void InputButtonControlFrame::GetLabel(nsAString& aLabel) {
+     // We can't make any assumption as to what the default would be
+     // because the value is localized for non-english platforms, thus
+     // it might not be the string "Reset", "Submit Query", or "Browse..."
+-    GetDefaultLabel(aLabel);
++    nsresult rv;
++    rv = GetDefaultLabel(aLabel);
++    NS_ENSURE_SUCCESS(rv, rv);
+   }
+ 
+   // Compress whitespace out of label if needed.
+@@ -133,43 +122,54 @@ void InputButtonControlFrame::GetLabel(nsAString& aLabel) {
+     // looks way too big in Mozilla.  Worse yet, if they do this _and_ set a
+     // fixed width for the button we run into trouble because our focus-rect
+     // border/padding and outer border take up 10px of the horizontal button
+-    // space or so; the result is that the text is misaligned.  So to solve
++    // space or so; the result is that the text is misaligned, even with the
++    // recentering we do in nsHTMLButtonControlFrame::Reflow.  So to solve
+     // this, even if the whitespace is significant, single leading and trailing
+     // _spaces_ (and not other whitespace) are removed.  The proper solution,
+     // of course, is to not have the focus rect painting taking up 6px of
+     // horizontal space. We should do that instead (changing the renderer) and
+     // remove this.
+-    //
+-    // TODO(emilio): We should be able to remove this now, we no longer have
+-    // inner focus rects.
+     aLabel.Cut(0, 1);
+     aLabel.Truncate(aLabel.Length() - 1);
+   }
+-}
+ 
+-void InputButtonControlFrame::UpdateLabel() {
+-  if (!mTextContent) {
+-    return;
+-  }
+-  nsAutoString label;
+-  GetLabel(label);
+-  mTextContent->SetText(label, true);
++  return NS_OK;
+ }
+ 
+-nsresult InputButtonControlFrame::AttributeChanged(int32_t aNameSpaceID,
++nsresult nsGfxButtonControlFrame::AttributeChanged(int32_t aNameSpaceID,
+                                                    nsAtom* aAttribute,
+                                                    int32_t aModType) {
++  nsresult rv = NS_OK;
++
+   // If the value attribute is set, update the text of the label
+   if (nsGkAtoms::value == aAttribute) {
+-    UpdateLabel();
++    if (mTextContent && mContent) {
++      nsAutoString label;
++      rv = GetLabel(label);
++      NS_ENSURE_SUCCESS(rv, rv);
++
++      mTextContent->SetText(label, true);
++    } else {
++      rv = NS_ERROR_UNEXPECTED;
++    }
++
++    // defer to HTMLButtonControlFrame
++  } else {
++    rv = nsHTMLButtonControlFrame::AttributeChanged(aNameSpaceID, aAttribute,
++                                                    aModType);
+   }
+-  return nsBlockFrame::AttributeChanged(aNameSpaceID, aAttribute, aModType);
++  return rv;
+ }
+ 
+-}  // namespace mozilla
++nsresult nsGfxButtonControlFrame::HandleEvent(nsPresContext* aPresContext,
++                                              WidgetGUIEvent* aEvent,
++                                              nsEventStatus* aEventStatus) {
++  // Override the HandleEvent to prevent the nsIFrame::HandleEvent
++  // from being called. The nsIFrame::HandleEvent causes the button label
++  // to be selected (Drawn with an XOR rectangle over the label)
+ 
+-nsIFrame* NS_NewInputButtonControlFrame(PresShell* aPresShell,
+-                                        ComputedStyle* aStyle) {
+-  return new (aPresShell)
+-      InputButtonControlFrame(aStyle, aPresShell->GetPresContext());
++  if (IsContentDisabled()) {
++    return nsIFrame::HandleEvent(aPresContext, aEvent, aEventStatus);
++  }
++  return NS_OK;
+ }
+diff --git a/layout/forms/nsGfxButtonControlFrame.h b/layout/forms/nsGfxButtonControlFrame.h
+new file mode 100644
+index 000000000000..38c30590ab95
+--- /dev/null
++++ b/layout/forms/nsGfxButtonControlFrame.h
+@@ -0,0 +1,59 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef nsGfxButtonControlFrame_h___
++#define nsGfxButtonControlFrame_h___
++
++#include "nsHTMLButtonControlFrame.h"
++#include "nsIAnonymousContentCreator.h"
++
++class nsTextNode;
++
++// Class which implements the input[type=button, reset, submit] and
++// browse button for input[type=file].
++// The label for button is specified through generated content
++// in the ua.css file.
++
++class nsGfxButtonControlFrame final : public nsHTMLButtonControlFrame,
++                                      public nsIAnonymousContentCreator {
++ public:
++  NS_DECL_FRAMEARENA_HELPERS(nsGfxButtonControlFrame)
++
++  explicit nsGfxButtonControlFrame(ComputedStyle* aStyle,
++                                   nsPresContext* aPresContext);
++
++  void Destroy(DestroyContext&) override;
++
++  nsresult HandleEvent(nsPresContext* aPresContext,
++                       mozilla::WidgetGUIEvent* aEvent,
++                       nsEventStatus* aEventStatus) override;
++
++#ifdef DEBUG_FRAME_DUMP
++  nsresult GetFrameName(nsAString& aResult) const override;
++#endif
++
++  NS_DECL_QUERYFRAME
++
++  // nsIAnonymousContentCreator
++  nsresult CreateAnonymousContent(nsTArray<ContentInfo>& aElements) override;
++  void AppendAnonymousContentTo(nsTArray<nsIContent*>& aElements,
++                                uint32_t aFilter) override;
++
++  nsresult AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
++                            int32_t aModType) override;
++
++  nsContainerFrame* GetContentInsertionFrame() override { return this; }
++
++ protected:
++  nsresult GetDefaultLabel(nsAString& aLabel) const;
++
++  nsresult GetLabel(nsString& aLabel);
++
++ private:
++  RefPtr<nsTextNode> mTextContent;
++};
++
++#endif
+diff --git a/layout/forms/nsHTMLButtonControlFrame.cpp b/layout/forms/nsHTMLButtonControlFrame.cpp
+new file mode 100644
+index 000000000000..e27b927d680c
+--- /dev/null
++++ b/layout/forms/nsHTMLButtonControlFrame.cpp
+@@ -0,0 +1,344 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsHTMLButtonControlFrame.h"
++
++#include <algorithm>
++
++#include "mozilla/Baseline.h"
++#include "mozilla/PresShell.h"
++#include "nsCSSRendering.h"
++#include "nsContainerFrame.h"
++#include "nsDisplayList.h"
++#include "nsGkAtoms.h"
++#include "nsIFrameInlines.h"
++#include "nsLayoutUtils.h"
++#include "nsPresContext.h"
++#include "nsPresContextInlines.h"
++
++using namespace mozilla;
++using namespace mozilla::image;
++
++nsContainerFrame* NS_NewHTMLButtonControlFrame(PresShell* aPresShell,
++                                               ComputedStyle* aStyle) {
++  return new (aPresShell)
++      nsHTMLButtonControlFrame(aStyle, aPresShell->GetPresContext());
++}
++
++NS_IMPL_FRAMEARENA_HELPERS(nsHTMLButtonControlFrame)
++
++nsHTMLButtonControlFrame::nsHTMLButtonControlFrame(ComputedStyle* aStyle,
++                                                   nsPresContext* aPresContext,
++                                                   nsIFrame::ClassID aID)
++    : nsContainerFrame(aStyle, aPresContext, aID) {}
++
++nsHTMLButtonControlFrame::~nsHTMLButtonControlFrame() = default;
++
++NS_QUERYFRAME_HEAD(nsHTMLButtonControlFrame)
++  NS_QUERYFRAME_ENTRY(nsHTMLButtonControlFrame)
++NS_QUERYFRAME_TAIL_INHERITING(nsContainerFrame)
++
++#ifdef ACCESSIBILITY
++a11y::AccType nsHTMLButtonControlFrame::AccessibleType() {
++  return a11y::eHTMLButtonType;
++}
++#endif
++
++nsresult nsHTMLButtonControlFrame::HandleEvent(nsPresContext* aPresContext,
++                                               WidgetGUIEvent* aEvent,
++                                               nsEventStatus* aEventStatus) {
++  if (mContent->AsElement()->IsDisabled()) {
++    // If disabled do nothing
++    return NS_OK;
++  }
++
++  // mouse clicks are handled by content
++  // we don't want our children to get any events. So just pass it to frame.
++  return nsIFrame::HandleEvent(aPresContext, aEvent, aEventStatus);
++}
++
++bool nsHTMLButtonControlFrame::ShouldClipPaintingToBorderBox() const {
++  // FIXME(emilio): probably should account for per-axis clipping...
++  return StyleDisplay()->mOverflowX != StyleOverflow::Visible;
++}
++
++void nsHTMLButtonControlFrame::BuildDisplayList(
++    nsDisplayListBuilder* aBuilder, const nsDisplayListSet& aLists) {
++  if (IsVisibleForPainting()) {
++    // Clip the button itself to its border area for event hit testing.
++    Maybe<DisplayListClipState::AutoSaveRestore> eventClipState;
++    if (aBuilder->IsForEventDelivery()) {
++      eventClipState.emplace(aBuilder);
++      nsRect rect(aBuilder->ToReferenceFrame(this), GetSize());
++      nscoord radii[8];
++      bool hasRadii = GetBorderRadii(radii);
++      eventClipState->ClipContainingBlockDescendants(
++          rect, hasRadii ? radii : nullptr);
++    }
++
++    DisplayBorderBackgroundOutline(aBuilder, aLists);
++  }
++
++  {
++    DisplayListClipState::AutoSaveRestore clipState(aBuilder);
++
++    if (ShouldClipPaintingToBorderBox()) {
++      nsMargin border = StyleBorder()->GetComputedBorder();
++      nsRect rect(aBuilder->ToReferenceFrame(this), GetSize());
++      rect.Deflate(border);
++      nscoord radii[8];
++      const bool hasRadii = GetPaddingBoxBorderRadii(radii);
++      clipState.ClipContainingBlockDescendants(rect,
++                                               hasRadii ? radii : nullptr);
++    }
++
++    BuildDisplayListForChild(aBuilder, mFrames.FirstChild(), aLists,
++                             DisplayChildFlag::ForcePseudoStackingContext);
++  }
++
++  // To draw border when selected in editor
++  DisplaySelectionOverlay(aBuilder, aLists.Content());
++}
++
++nscoord nsHTMLButtonControlFrame::IntrinsicISize(
++    const IntrinsicSizeInput& aInput, IntrinsicISizeType aType) {
++  if (Maybe<nscoord> containISize = ContainIntrinsicISize()) {
++    return *containISize;
++  }
++  return nsLayoutUtils::IntrinsicForContainer(
++      aInput.mContext, mFrames.FirstChild(), aType,
++      aInput.mPercentageBasisForChildren);
++}
++
++void nsHTMLButtonControlFrame::Reflow(nsPresContext* aPresContext,
++                                      ReflowOutput& aDesiredSize,
++                                      const ReflowInput& aReflowInput,
++                                      nsReflowStatus& aStatus) {
++  MarkInReflow();
++  DO_GLOBAL_REFLOW_COUNT("nsHTMLButtonControlFrame");
++  MOZ_ASSERT(aStatus.IsEmpty(), "Caller should pass a fresh reflow status!");
++
++  // Reflow the child
++  nsIFrame* firstKid = mFrames.FirstChild();
++
++  MOZ_ASSERT(firstKid, "Button should have a child frame for its contents");
++  MOZ_ASSERT(!firstKid->GetNextSibling(),
++             "Button should have exactly one child frame");
++  MOZ_ASSERT(
++      firstKid->Style()->GetPseudoType() == PseudoStyleType::buttonContent,
++      "Button's child frame has unexpected pseudo type!");
++
++  // XXXbz Eventually we may want to check-and-bail if
++  // !aReflowInput.ShouldReflowAllKids() &&
++  // !firstKid->IsSubtreeDirty().
++  // We'd need to cache our ascent for that, of course.
++
++  // Reflow the contents of the button.
++  // (This populates our aDesiredSize, too.)
++  ReflowButtonContents(aPresContext, aDesiredSize, aReflowInput, firstKid);
++
++  if (!ShouldClipPaintingToBorderBox()) {
++    ConsiderChildOverflow(aDesiredSize.mOverflowAreas, firstKid);
++  }
++  // else, we ignore child overflow -- anything that overflows beyond our
++  // own border-box will get clipped when painting.
++
++  FinishReflowWithAbsoluteFrames(aPresContext, aDesiredSize, aReflowInput,
++                                 aStatus);
++
++  // We're always complete and we don't support overflow containers
++  // so we shouldn't have a next-in-flow ever.
++  aStatus.Reset();
++  MOZ_ASSERT(!GetNextInFlow());
++}
++
++void nsHTMLButtonControlFrame::ReflowButtonContents(
++    nsPresContext* aPresContext, ReflowOutput& aButtonDesiredSize,
++    const ReflowInput& aButtonReflowInput, nsIFrame* aFirstKid) {
++  WritingMode wm = GetWritingMode();
++  LogicalSize availSize = aButtonReflowInput.ComputedSize(wm);
++  availSize.BSize(wm) = NS_UNCONSTRAINEDSIZE;
++
++  // shorthand for a value we need to use in a bunch of places
++  const LogicalMargin& clbp =
++      aButtonReflowInput.ComputedLogicalBorderPadding(wm);
++
++  LogicalPoint childPos(wm);
++  childPos.I(wm) = clbp.IStart(wm);
++  availSize.ISize(wm) = std::max(availSize.ISize(wm), 0);
++
++  ReflowInput contentsReflowInput(aPresContext, aButtonReflowInput, aFirstKid,
++                                  availSize);
++
++  nsReflowStatus contentsReflowStatus;
++  ReflowOutput contentsDesiredSize(aButtonReflowInput);
++  childPos.B(wm) = 0;  // This will be set properly later, after reflowing the
++                       // child to determine its size.
++
++  if (aFirstKid->IsFlexOrGridContainer()) {
++    // XXX: Should we use ResetResizeFlags::Yes?
++    contentsReflowInput.SetComputedBSize(aButtonReflowInput.ComputedBSize(),
++                                         ReflowInput::ResetResizeFlags::No);
++    contentsReflowInput.SetComputedMinBSize(
++        aButtonReflowInput.ComputedMinBSize());
++    contentsReflowInput.SetComputedMaxBSize(
++        aButtonReflowInput.ComputedMaxBSize());
++  }
++
++  // We just pass a dummy containerSize here, as the child will be
++  // repositioned later by FinishReflowChild.
++  nsSize dummyContainerSize;
++  ReflowChild(aFirstKid, aPresContext, contentsDesiredSize, contentsReflowInput,
++              wm, childPos, dummyContainerSize, ReflowChildFlags::Default,
++              contentsReflowStatus);
++  MOZ_ASSERT(contentsReflowStatus.IsComplete(),
++             "We gave button-contents frame unconstrained available height, "
++             "so it should be complete");
++
++  // Compute the button's content-box size:
++  LogicalSize buttonContentBox(wm);
++  if (aButtonReflowInput.ComputedBSize() != NS_UNCONSTRAINEDSIZE) {
++    // Button has a fixed block-size -- that's its content-box bSize.
++    buttonContentBox.BSize(wm) = aButtonReflowInput.ComputedBSize();
++  } else {
++    // Button is intrinsically sized -- it should shrinkwrap the contents'
++    // bSize.
++    // If we have size containment in block axis, ignore the contents and use
++    // contain-intrinsic-block-size. The combobox content size with no content
++    // is one line-height, not zero.
++    const Maybe<nscoord> containBSize = ContainIntrinsicBSize(
++        IsComboboxControlFrame() ? aButtonReflowInput.GetLineHeight() : 0);
++    const nscoord bSize = containBSize.valueOr(contentsDesiredSize.BSize(wm));
++    // Make sure we obey min/max-bSize in the case when we're doing intrinsic
++    // sizing (we get it for free when we have a non-intrinsic
++    // aButtonReflowInput.ComputedBSize()).  Note that we do this before
++    // adjusting for borderpadding, since mComputedMaxBSize and
++    // mComputedMinBSize are content bSizes.
++    buttonContentBox.BSize(wm) = aButtonReflowInput.ApplyMinMaxBSize(bSize);
++  }
++  if (aButtonReflowInput.ComputedISize() != NS_UNCONSTRAINEDSIZE) {
++    buttonContentBox.ISize(wm) = aButtonReflowInput.ComputedISize();
++  } else {
++    nscoord iSize = aButtonReflowInput.mFrame->ContainIntrinsicISize().valueOr(
++        contentsDesiredSize.ISize(wm));
++    buttonContentBox.ISize(wm) = aButtonReflowInput.ApplyMinMaxISize(iSize);
++  }
++
++  // Center child in the block-direction in the button
++  // (technically, inside of the button's focus-padding area)
++  nscoord extraSpace =
++      buttonContentBox.BSize(wm) - contentsDesiredSize.BSize(wm);
++
++  childPos.B(wm) = std::max(0, extraSpace / 2);
++
++  // Adjust childPos.B() to be in terms of the button's frame-rect:
++  childPos.B(wm) += clbp.BStart(wm);
++
++  nsSize containerSize = (buttonContentBox + clbp.Size(wm)).GetPhysicalSize(wm);
++
++  // Place the child
++  FinishReflowChild(aFirstKid, aPresContext, contentsDesiredSize,
++                    &contentsReflowInput, wm, childPos, containerSize,
++                    ReflowChildFlags::Default);
++
++  // Make sure we have a useful 'ascent' value for the child
++  if (contentsDesiredSize.BlockStartAscent() ==
++      ReflowOutput::ASK_FOR_BASELINE) {
++    WritingMode wm = aButtonReflowInput.GetWritingMode();
++    contentsDesiredSize.SetBlockStartAscent(aFirstKid->GetLogicalBaseline(wm));
++  }
++
++  // OK, we're done with the child frame.
++  // Use what we learned to populate the button frame's reflow metrics.
++  //  * Button's height & width are content-box size + border-box contribution:
++  aButtonDesiredSize.SetSize(
++      wm,
++      LogicalSize(wm, aButtonReflowInput.ComputedISize() + clbp.IStartEnd(wm),
++                  buttonContentBox.BSize(wm) + clbp.BStartEnd(wm)));
++
++  //  * Button's ascent is its child's ascent, plus the child's block-offset
++  // within our frame... unless it's orthogonal, in which case we'll use the
++  // contents inline-size as an approximation for now.
++  // XXX is there a better strategy? should we include border-padding?
++  if (!aButtonReflowInput.mStyleDisplay->IsContainLayout()) {
++    if (aButtonDesiredSize.GetWritingMode().IsOrthogonalTo(wm)) {
++      aButtonDesiredSize.SetBlockStartAscent(
++          wm.IsAlphabeticalBaseline() ? contentsDesiredSize.ISize(wm)
++                                      : contentsDesiredSize.ISize(wm) / 2);
++    } else {
++      aButtonDesiredSize.SetBlockStartAscent(
++          contentsDesiredSize.BlockStartAscent() + childPos.B(wm));
++    }
++  }  // else: we're layout-contained, and so we have no baseline.
++
++  aButtonDesiredSize.SetOverflowAreasToDesiredBounds();
++}
++
++Maybe<nscoord> nsHTMLButtonControlFrame::GetNaturalBaselineBOffset(
++    WritingMode aWM, BaselineSharingGroup aBaselineGroup,
++    BaselineExportContext aExportContext) const {
++  if (StyleDisplay()->IsContainLayout()) {
++    return Nothing{};
++  }
++
++  nsIFrame* inner = mFrames.FirstChild();
++  if (MOZ_UNLIKELY(inner->GetWritingMode().IsOrthogonalTo(aWM))) {
++    return Nothing{};
++  }
++  auto result =
++      inner->GetNaturalBaselineBOffset(aWM, aBaselineGroup, aExportContext)
++          .valueOrFrom([inner, aWM, aBaselineGroup]() {
++            return Baseline::SynthesizeBOffsetFromBorderBox(inner, aWM,
++                                                            aBaselineGroup);
++          });
++
++  nscoord innerBStart = inner->BStart(aWM, GetSize());
++  if (aBaselineGroup == BaselineSharingGroup::First) {
++    return Some(result + innerBStart);
++  }
++  return Some(result + BSize(aWM) - (innerBStart + inner->BSize(aWM)));
++}
++
++BaselineSharingGroup nsHTMLButtonControlFrame::GetDefaultBaselineSharingGroup()
++    const {
++  nsIFrame* firstKid = mFrames.FirstChild();
++
++  MOZ_ASSERT(firstKid, "Button should have a child frame for its contents");
++  MOZ_ASSERT(!firstKid->GetNextSibling(),
++             "Button should have exactly one child frame");
++  return firstKid->GetDefaultBaselineSharingGroup();
++}
++
++nscoord nsHTMLButtonControlFrame::SynthesizeFallbackBaseline(
++    mozilla::WritingMode aWM, BaselineSharingGroup aBaselineGroup) const {
++  return Baseline::SynthesizeBOffsetFromMarginBox(this, aWM, aBaselineGroup);
++}
++
++void nsHTMLButtonControlFrame::AppendDirectlyOwnedAnonBoxes(
++    nsTArray<OwnedAnonBox>& aResult) {
++  MOZ_ASSERT(mFrames.FirstChild(), "Must have our button-content anon box");
++  MOZ_ASSERT(!mFrames.FirstChild()->GetNextSibling(),
++             "Must only have our button-content anon box");
++  aResult.AppendElement(OwnedAnonBox(mFrames.FirstChild()));
++}
++
++#ifdef DEBUG
++void nsHTMLButtonControlFrame::AppendFrames(ChildListID aListID,
++                                            nsFrameList&& aFrameList) {
++  MOZ_CRASH("unsupported operation");
++}
++
++void nsHTMLButtonControlFrame::InsertFrames(
++    ChildListID aListID, nsIFrame* aPrevFrame,
++    const nsLineList::iterator* aPrevFrameLine, nsFrameList&& aFrameList) {
++  MOZ_CRASH("unsupported operation");
++}
++
++void nsHTMLButtonControlFrame::RemoveFrame(DestroyContext&, ChildListID,
++                                           nsIFrame*) {
++  MOZ_CRASH("unsupported operation");
++}
++#endif
+diff --git a/layout/forms/nsHTMLButtonControlFrame.h b/layout/forms/nsHTMLButtonControlFrame.h
+new file mode 100644
+index 000000000000..7b254d1e2085
+--- /dev/null
++++ b/layout/forms/nsHTMLButtonControlFrame.h
+@@ -0,0 +1,93 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef nsHTMLButtonControlFrame_h___
++#define nsHTMLButtonControlFrame_h___
++
++#include "nsCSSRenderingBorders.h"
++#include "nsContainerFrame.h"
++
++class gfxContext;
++class nsPresContext;
++
++class nsHTMLButtonControlFrame : public nsContainerFrame {
++ public:
++  explicit nsHTMLButtonControlFrame(ComputedStyle* aStyle,
++                                    nsPresContext* aPresContext)
++      : nsHTMLButtonControlFrame(aStyle, aPresContext, kClassID) {}
++
++  ~nsHTMLButtonControlFrame();
++
++  NS_DECL_QUERYFRAME
++  NS_DECL_FRAMEARENA_HELPERS(nsHTMLButtonControlFrame)
++
++  void BuildDisplayList(nsDisplayListBuilder* aBuilder,
++                        const nsDisplayListSet& aLists) override;
++
++  nscoord IntrinsicISize(const mozilla::IntrinsicSizeInput& aInput,
++                         mozilla::IntrinsicISizeType aType) override;
++
++  void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
++              const ReflowInput& aReflowInput,
++              nsReflowStatus& aStatus) override;
++
++  Maybe<nscoord> GetNaturalBaselineBOffset(
++      mozilla::WritingMode aWM, BaselineSharingGroup aBaselineGroup,
++      BaselineExportContext aExportContext) const override;
++
++  nsresult HandleEvent(nsPresContext* aPresContext,
++                       mozilla::WidgetGUIEvent* aEvent,
++                       nsEventStatus* aEventStatus) override;
++
++#ifdef DEBUG
++  void AppendFrames(ChildListID aListID, nsFrameList&& aFrameList) override;
++  void InsertFrames(ChildListID aListID, nsIFrame* aPrevFrame,
++                    const nsLineList::iterator* aPrevFrameLine,
++                    nsFrameList&& aFrameList) override;
++  void RemoveFrame(DestroyContext&, ChildListID, nsIFrame*) override;
++#endif
++
++#ifdef ACCESSIBILITY
++  mozilla::a11y::AccType AccessibleType() override;
++#endif
++
++#ifdef DEBUG_FRAME_DUMP
++  nsresult GetFrameName(nsAString& aResult) const override {
++    return MakeFrameName(u"HTMLButtonControl"_ns, aResult);
++  }
++#endif
++
++  // Inserted child content gets its frames parented by our child block
++  nsContainerFrame* GetContentInsertionFrame() override {
++    return PrincipalChildList().FirstChild()->GetContentInsertionFrame();
++  }
++
++  // Return the ::-moz-button-content anonymous box.
++  void AppendDirectlyOwnedAnonBoxes(nsTArray<OwnedAnonBox>& aResult) override;
++
++ protected:
++  nsHTMLButtonControlFrame(ComputedStyle* aStyle, nsPresContext* aPresContext,
++                           nsIFrame::ClassID aID);
++
++  // Indicates whether we should clip our children's painting to our
++  // border-box (either because of "overflow" or because of legacy reasons
++  // about how <input>-flavored buttons work).
++  bool ShouldClipPaintingToBorderBox() const;
++
++  // Reflows the button's sole child frame, and computes the desired size
++  // of the button itself from the results.
++  void ReflowButtonContents(nsPresContext* aPresContext,
++                            ReflowOutput& aButtonDesiredSize,
++                            const ReflowInput& aButtonReflowInput,
++                            nsIFrame* aFirstKid);
++
++  BaselineSharingGroup GetDefaultBaselineSharingGroup() const override;
++  nscoord SynthesizeFallbackBaseline(
++      mozilla::WritingMode aWM,
++      BaselineSharingGroup aBaselineGroup) const override;
++};
++
++#endif
+diff --git a/layout/generic/ColumnSetWrapperFrame.cpp b/layout/generic/ColumnSetWrapperFrame.cpp
+index 545be60a3627..da0b6c26c32a 100644
+--- a/layout/generic/ColumnSetWrapperFrame.cpp
++++ b/layout/generic/ColumnSetWrapperFrame.cpp
+@@ -251,6 +251,10 @@ Maybe<nscoord> ColumnSetWrapperFrame::GetBaselineBOffset(
+                  (*aStart == PrincipalChildList().LastChild() &&
+                   aBaselineGroup == BaselineSharingGroup::Last),
+              "Iterator direction must match baseline sharing group.");
++  if (StyleDisplay()->IsContainLayout()) {
++    return Nothing{};
++  }
++
+   // Start from start/end of principal child list, and use the first valid
+   // baseline.
+   for (auto itr = aStart; itr != aEnd; ++itr) {
+@@ -277,9 +281,6 @@ Maybe<nscoord> ColumnSetWrapperFrame::GetBaselineBOffset(
+ Maybe<nscoord> ColumnSetWrapperFrame::GetNaturalBaselineBOffset(
+     WritingMode aWM, BaselineSharingGroup aBaselineGroup,
+     BaselineExportContext aExportContext) const {
+-  if (StyleDisplay()->IsContainLayout()) {
+-    return Nothing{};
+-  }
+   if (aBaselineGroup == BaselineSharingGroup::First) {
+     return GetBaselineBOffset(PrincipalChildList().cbegin(),
+                               PrincipalChildList().cend(), aWM, aBaselineGroup,
+diff --git a/layout/generic/FrameClasses.py b/layout/generic/FrameClasses.py
+index 5a1a18dd6c50..64189f604cbe 100644
+--- a/layout/generic/FrameClasses.py
++++ b/layout/generic/FrameClasses.py
+@@ -52,7 +52,6 @@ FRAME_CLASSES = [
+     Frame("nsBlockFrame", "Block", BLOCK),
+     Frame("nsCanvasFrame", "Canvas", BLOCK),
+     Frame("nsCheckboxRadioFrame", "CheckboxRadio", REPLACED | LEAF),
+-    Frame("InputButtonControlFrame", "InputButtonControl", REPLACED | LEAF),
+     Frame("nsColorControlFrame", "ColorControl", REPLACED | LEAF),
+     Frame("nsColumnSetFrame", "ColumnSet", COMMON),
+     Frame("ColumnSetWrapperFrame", "ColumnSetWrapper", BLOCK | BFC),
+@@ -68,7 +67,9 @@ FRAME_CLASSES = [
+     Frame("nsFirstLineFrame", "Line", INLINE),
+     Frame("nsFlexContainerFrame", "FlexContainer", BLOCK),
+     Frame("nsIFrame", "None", COMMON),
++    Frame("nsGfxButtonControlFrame", "GfxButtonControl", REPLACED | LEAF),
+     Frame("nsGridContainerFrame", "GridContainer", BLOCK),
++    Frame("nsHTMLButtonControlFrame", "HTMLButtonControl", REPLACED),
+     Frame("nsHTMLCanvasFrame", "HTMLCanvas", REPLACED_SIZING),
+     Frame("nsHTMLFramesetBlankFrame", "None", COMMON | LEAF),
+     Frame("nsHTMLFramesetBorderFrame", "None", COMMON | LEAF),
+@@ -174,7 +175,6 @@ FRAME_CLASSES = [
+     Frame("ViewportFrame", "Viewport", COMMON),
+     Frame("WBRFrame", "Wbr", COMMON | LEAF),
+     # Non-concrete classes (for FrameIID use)
+-    AbstractFrame("ButtonControlFrame"),
+     AbstractFrame("MiddleCroppingBlockFrame"),
+     AbstractFrame("nsContainerFrame"),
+     AbstractFrame("nsLeafFrame"),
+diff --git a/layout/generic/ReflowInput.cpp b/layout/generic/ReflowInput.cpp
+index c20a2deede95..d8250a987707 100644
+--- a/layout/generic/ReflowInput.cpp
++++ b/layout/generic/ReflowInput.cpp
+@@ -2951,6 +2951,7 @@ bool SizeComputationInput::ComputeMargin(WritingMode aCBWM,
+ 
+   // If style style can provide us the margin directly, then use it.
+   const nsStyleMargin* styleMargin = mFrame->StyleMargin();
++
+   nsMargin margin;
+   const bool isLayoutDependent = !styleMargin->GetMargin(margin);
+   if (isLayoutDependent) {
+diff --git a/layout/generic/ScrollContainerFrame.cpp b/layout/generic/ScrollContainerFrame.cpp
+index 3ef5dbe29d94..1522318edefb 100644
+--- a/layout/generic/ScrollContainerFrame.cpp
++++ b/layout/generic/ScrollContainerFrame.cpp
+@@ -1396,7 +1396,7 @@ BaselineSharingGroup ScrollContainerFrame::GetDefaultBaselineSharingGroup()
+ 
+ nscoord ScrollContainerFrame::SynthesizeFallbackBaseline(
+     mozilla::WritingMode aWM, BaselineSharingGroup aBaselineGroup) const {
+-  // Margin-end even for central baselines.
++  // Marign-end even for central baselines.
+   if (aWM.IsLineInverted()) {
+     return -GetLogicalUsedMargin(aWM).BStart(aWM);
+   }
+diff --git a/layout/generic/TextOverflow.cpp b/layout/generic/TextOverflow.cpp
+index c8d8e885cc59..7e9263d8da03 100644
+--- a/layout/generic/TextOverflow.cpp
++++ b/layout/generic/TextOverflow.cpp
+@@ -838,7 +838,8 @@ bool TextOverflow::CanHaveOverflowMarkers(nsBlockFrame* aBlockFrame,
+ 
+   // Skip the combobox anonymous block because it would clip the drop-down
+   // arrow. The inner label inherits 'text-overflow' and does the right thing.
+-  if (aBlockFrame->IsComboboxControlFrame()) {
++  if (aBlockFrame->GetParent() &&
++      aBlockFrame->GetParent()->IsComboboxControlFrame()) {
+     return false;
+   }
+ 
+diff --git a/layout/generic/nsBlockFrame.cpp b/layout/generic/nsBlockFrame.cpp
+index 5eaff0ebc5da..89b306d9154f 100644
+--- a/layout/generic/nsBlockFrame.cpp
++++ b/layout/generic/nsBlockFrame.cpp
+@@ -596,9 +596,6 @@ void nsBlockFrame::InvalidateFrameWithRect(const nsRect& aRect,
+ 
+ nscoord nsBlockFrame::SynthesizeFallbackBaseline(
+     WritingMode aWM, BaselineSharingGroup aBaselineGroup) const {
+-  if (IsButtonLike() && StyleDisplay()->IsInlineOutsideStyle()) {
+-    return Baseline::SynthesizeBOffsetFromContentBox(this, aWM, aBaselineGroup);
+-  }
+   return Baseline::SynthesizeBOffsetFromMarginBox(this, aWM, aBaselineGroup);
+ }
+ 
+@@ -665,21 +662,13 @@ Maybe<nscoord> nsBlockFrame::GetNaturalBaselineBOffset(
+     return Nothing{};
+   }
+ 
+-  Maybe<nscoord> offset =
+-      aBaselineGroup == BaselineSharingGroup::First
+-          ? GetBaselineBOffset(LinesBegin(), LinesEnd(), aWM, aBaselineGroup,
+-                               aExportContext)
+-          : GetBaselineBOffset(LinesRBegin(), LinesREnd(), aWM, aBaselineGroup,
+-                               aExportContext);
+-  if (!offset && IsButtonLike() && !mLines.empty()) {
+-    // Buttons use the end of the content as a baseline if we haven't found one
+-    // yet.
+-    nscoord bEnd = mLines.back()->BEnd();
+-    offset.emplace(aBaselineGroup == BaselineSharingGroup::Last
+-                       ? BSize(aWM) - bEnd
+-                       : bEnd);
++  if (aBaselineGroup == BaselineSharingGroup::First) {
++    return GetBaselineBOffset(LinesBegin(), LinesEnd(), aWM, aBaselineGroup,
++                              aExportContext);
+   }
+-  return offset;
++
++  return GetBaselineBOffset(LinesRBegin(), LinesREnd(), aWM, aBaselineGroup,
++                            aExportContext);
+ }
+ 
+ nscoord nsBlockFrame::GetCaretBaseline() const {
+@@ -2274,8 +2263,7 @@ nscoord nsBlockFrame::ComputeFinalSize(const ReflowInput& aReflowInput,
+     // calculated from aspect-ratio. i.e. Don't carry out block margin-end if it
+     // is replaced by the block size from aspect-ratio and inline size.
+     aMetrics.mCarriedOutBEndMargin.Zero();
+-  } else if (Maybe<nscoord> containBSize = ContainIntrinsicBSize(
+-                 IsComboboxControlFrame() ? aReflowInput.GetLineHeight() : 0)) {
++  } else if (Maybe<nscoord> containBSize = ContainIntrinsicBSize()) {
+     // If we're size-containing in block axis and we don't have a specified
+     // block size, then our final size should actually be computed from only
+     // our border, padding and contain-intrinsic-block-size, ignoring the
+@@ -2409,7 +2397,7 @@ nscoord nsBlockFrame::ComputeFinalSize(const ReflowInput& aReflowInput,
+ void nsBlockFrame::AlignContent(BlockReflowState& aState,
+                                 ReflowOutput& aMetrics,
+                                 nscoord aBEndEdgeOfChildren) {
+-  StyleAlignFlags alignment = EffectiveAlignContent();
++  StyleAlignFlags alignment = StylePosition()->mAlignContent.primary;
+   alignment &= ~StyleAlignFlags::FLAG_BITS;
+ 
+   // Short circuit
+@@ -2435,8 +2423,7 @@ void nsBlockFrame::AlignContent(BlockReflowState& aState,
+   if ((isCentered || isEndAlign) && !mLines.empty() &&
+       aState.mReflowStatus.IsFullyComplete() && !GetPrevInFlow()) {
+     nscoord availB = aState.mReflowInput.AvailableBSize();
+-    nscoord endB =
+-        aMetrics.Size(wm).BSize(wm) - aState.BorderPadding().BEnd(wm);
++    nscoord endB = aMetrics.BSize(wm) - aState.BorderPadding().BEnd(wm);
+     shift = std::min(availB, endB) - aBEndEdgeOfChildren;
+ 
+     // note: these measures all include start BP, so it subtracts out
+@@ -2659,13 +2646,6 @@ void nsBlockFrame::UnionChildOverflow(OverflowAreas& aOverflowAreas,
+   // frame children, so calling UnionChildOverflow alone will end up
+   // using the old cached values.
+   const auto wm = GetWritingMode();
+-
+-  // ButtonControlFrame elements don't support scrolling, and some like
+-  // comboboxes intentionally ignore padding to place their inner elements like
+-  // the button, so to preserve behavior of stuff like the scroll{Width,Height}
+-  // APIs, forcefully ignore aAsIfScrolled there.
+-  aAsIfScrolled = aAsIfScrolled && !IsButtonControlFrame();
+-
+   // Overflow area computed here should agree with one computed in
+   // `ComputeOverflowAreas` (see bug 1800939 and bug 1800719). So the
+   // documentation in that function applies here as well.
+@@ -6785,6 +6765,7 @@ static bool AnonymousBoxIsBFC(const ComputedStyle* aStyle) {
+   switch (aStyle->GetPseudoType()) {
+     case PseudoStyleType::fieldsetContent:
+     case PseudoStyleType::columnContent:
++    case PseudoStyleType::buttonContent:
+     case PseudoStyleType::cellContent:
+     case PseudoStyleType::scrolledContent:
+     case PseudoStyleType::anonymousItem:
+@@ -6807,6 +6788,8 @@ static bool StyleEstablishesBFC(const ComputedStyle* aStyle) {
+              (StyleContainerType::SIZE | StyleContainerType::INLINE_SIZE) ||
+          disp->DisplayInside() == StyleDisplayInside::FlowRoot ||
+          disp->IsAbsolutelyPositionedStyle() || disp->IsFloatingStyle() ||
++         aStyle->StylePosition()->mAlignContent.primary !=
++             StyleAlignFlags::NORMAL ||
+          aStyle->IsRootElementStyle() || AnonymousBoxIsBFC(aStyle);
+ }
+ 
+@@ -6839,10 +6822,6 @@ static bool EstablishesBFC(const nsBlockFrame* aFrame) {
+     return true;
+   }
+ 
+-  if (aFrame->IsContentAligned()) {
+-    return true;
+-  }
+-
+   if (aFrame->IsSuppressedScrollableBlockForPrint()) {
+     return true;
+   }
+@@ -8143,31 +8122,27 @@ a11y::AccType nsBlockFrame::AccessibleType() {
+     return a11y::eHTMLHRType;
+   }
+ 
+-  if (IsButtonLike()) {
+-    return a11y::eHTMLButtonType;
+-  }
+-
+-  if (HasMarker()) {
+-    // Create special list item accessible since we have a ::marker.
+-    return a11y::eHTMLLiType;
+-  }
++  if (!HasMarker() || !PresContext()) {
++    // XXXsmaug What if we're in the shadow dom?
++    if (!mContent->GetParent()) {
++      // Don't create accessible objects for the root content node, they are
++      // redundant with the nsDocAccessible object created with the document
++      // node
++      return a11y::eNoType;
++    }
+ 
+-  // XXXsmaug What if we're in the shadow dom?
+-  if (!mContent->GetParent()) {
+-    // Don't create accessible objects for the root content node, they are
+-    // redundant with the nsDocAccessible object created with the document
+-    // node
+-    return a11y::eNoType;
+-  }
++    if (mContent == mContent->OwnerDoc()->GetBody()) {
++      // Don't create accessible objects for the body, they are redundant with
++      // the nsDocAccessible object created with the document node
++      return a11y::eNoType;
++    }
+ 
+-  if (mContent == mContent->OwnerDoc()->GetBody()) {
+-    // Don't create accessible objects for the body, they are redundant with
+-    // the nsDocAccessible object created with the document node
+-    return a11y::eNoType;
++    // Not a list item with a ::marker, treat as normal HTML container.
++    return a11y::eHyperTextType;
+   }
+ 
+-  // Not a list item with a ::marker, treat as normal HTML container.
+-  return a11y::eHyperTextType;
++  // Create special list item accessible since we have a ::marker.
++  return a11y::eHTMLLiType;
+ }
+ #endif
+ 
+@@ -8337,6 +8312,8 @@ void nsBlockFrame::SetInitialChildList(ChildListID aListID,
+          (pseudo == PseudoStyleType::cellContent &&
+           !GetParent()->Style()->IsPseudoOrAnonBox()) ||
+          pseudo == PseudoStyleType::fieldsetContent ||
++         (pseudo == PseudoStyleType::buttonContent &&
++          !GetParent()->IsComboboxControlFrame()) ||
+          pseudo == PseudoStyleType::columnContent ||
+          (pseudo == PseudoStyleType::scrolledContent &&
+           !GetParent()->IsListControlFrame()) ||
+diff --git a/layout/generic/nsBlockFrame.h b/layout/generic/nsBlockFrame.h
+index 75f0f24efe28..b7cd115b0ffe 100644
+--- a/layout/generic/nsBlockFrame.h
++++ b/layout/generic/nsBlockFrame.h
+@@ -530,34 +530,24 @@ class nsBlockFrame : public nsContainerFrame {
+    */
+   nsresult ResolveBidi();
+ 
+- public:
+-  bool IsButtonControlFrame() const {
+-    return IsInputButtonControlFrame() || IsColorControlFrame() ||
+-           IsComboboxControlFrame();
+-  }
+-
+-  bool IsButtonLike() const {
+-    if (!Style()->IsAnonBox() && mContent->IsHTMLElement(nsGkAtoms::button)) {
+-      return true;
+-    }
+-    return IsButtonControlFrame();
+-  }
+-
+-  /** Returns the effective align-content of this frame */
+-  mozilla::StyleAlignFlags EffectiveAlignContent() const {
+-    if (IsButtonLike()) {
+-      return mozilla::StyleAlignFlags::CENTER;
+-    }
+-    return StylePosition()->mAlignContent.primary;
+-  }
++  /**
++   * Test whether the frame is a form control in a visual Bidi page.
++   * This is necessary for backwards-compatibility, because most visual
++   * pages use logical order for form controls so that they will
++   * display correctly on native widgets in OSs with Bidi support
++   * @param aPresContext the pres context
++   * @return whether the frame is a BIDI form control
++   */
++  bool IsVisualFormControl(nsPresContext* aPresContext);
+ 
+-  bool IsContentAligned() const {
+-    return EffectiveAlignContent() != mozilla::StyleAlignFlags::NORMAL;
++  /** Whether this block has an effective align-content property */
++  bool IsAligned() const {
++    return StylePosition()->mAlignContent.primary !=
++           mozilla::StyleAlignFlags::NORMAL;
+   }
+ 
+- protected:
+   nscoord GetAlignContentShift() const {
+-    return IsContentAligned() ? GetProperty(AlignContentShift()) : 0;
++    return IsAligned() ? GetProperty(AlignContentShift()) : 0;
+   }
+ 
+   /**
+diff --git a/layout/generic/nsFlexContainerFrame.cpp b/layout/generic/nsFlexContainerFrame.cpp
+index 79771c2b6dda..8e888f93b722 100644
+--- a/layout/generic/nsFlexContainerFrame.cpp
++++ b/layout/generic/nsFlexContainerFrame.cpp
+@@ -2961,9 +2961,11 @@ void nsFlexContainerFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
+   // (or a blockified version thereof, to not hit bug 456484).
+   if (displayInside == StyleDisplayInside::Flow) {
+     MOZ_ASSERT(StyleDisplay()->mDisplay == StyleDisplay::Block);
+-    MOZ_ASSERT(Style()->GetPseudoType() == PseudoStyleType::scrolledContent,
++    MOZ_ASSERT(Style()->GetPseudoType() == PseudoStyleType::buttonContent ||
++                   Style()->GetPseudoType() == PseudoStyleType::scrolledContent,
+                "The only way a nsFlexContainerFrame can have 'display:block' "
+-               "should be if it's the inner part of a scrollable element");
++               "should be if it's the inner part of a scrollable or button "
++               "element");
+     displayInside = GetParent()->StyleDisplay()->DisplayInside();
+   }
+ 
+diff --git a/layout/generic/nsGridContainerFrame.cpp b/layout/generic/nsGridContainerFrame.cpp
+index 0e418b28c588..048dc3eebc81 100644
+--- a/layout/generic/nsGridContainerFrame.cpp
++++ b/layout/generic/nsGridContainerFrame.cpp
+@@ -31,6 +31,7 @@
+ #include "nsCSSFrameConstructor.h"
+ #include "nsDisplayList.h"
+ #include "nsFieldSetFrame.h"
++#include "nsHTMLButtonControlFrame.h"
+ #include "nsHashKeys.h"
+ #include "nsIFrameInlines.h"  // for nsIFrame::GetLogicalNormalPosition (don't remove)
+ #include "nsLayoutUtils.h"
+@@ -4096,6 +4097,8 @@ static Subgrid* SubgridComputeMarginBorderPadding(
+           aGridItem.mFrame->GetScrollTargetFrame()) {
+     scroller = true;
+     outerFrame = scrollContainerFrame;
++  } else if (nsHTMLButtonControlFrame* f = do_QueryFrame(aGridItem.mFrame)) {
++    outerFrame = f;
+   }
+ 
+   if (outerFrame) {
+diff --git a/layout/generic/nsHTMLParts.h b/layout/generic/nsHTMLParts.h
+index 33ba9c6e6997..918313500a86 100644
+--- a/layout/generic/nsHTMLParts.h
++++ b/layout/generic/nsHTMLParts.h
+@@ -123,10 +123,14 @@ nsFirstLineFrame* NS_NewFirstLineFrame(mozilla::PresShell* aPresShell,
+                                        mozilla::ComputedStyle* aStyle);
+ 
+ // forms
++nsContainerFrame* NS_NewGfxButtonControlFrame(mozilla::PresShell* aPresShell,
++                                              mozilla::ComputedStyle* aStyle);
+ nsCheckboxRadioFrame* NS_NewCheckboxRadioFrame(mozilla::PresShell* aPresShell,
+                                                mozilla::ComputedStyle* aStyle);
+ nsIFrame* NS_NewImageControlFrame(mozilla::PresShell* aPresShell,
+                                   mozilla::ComputedStyle* aStyle);
++nsContainerFrame* NS_NewHTMLButtonControlFrame(mozilla::PresShell* aPresShell,
++                                               mozilla::ComputedStyle* aStyle);
+ nsContainerFrame* NS_NewFieldSetFrame(mozilla::PresShell* aPresShell,
+                                       mozilla::ComputedStyle* aStyle);
+ nsIFrame* NS_NewFileControlFrame(mozilla::PresShell* aPresShell,
+diff --git a/layout/generic/nsIFrame.cpp b/layout/generic/nsIFrame.cpp
+index 6bf9df5505a3..5a99d8377ae9 100644
+--- a/layout/generic/nsIFrame.cpp
++++ b/layout/generic/nsIFrame.cpp
+@@ -594,17 +594,6 @@ static void MaybeScheduleReflowSVGNonDisplayText(nsIFrame* aFrame) {
+       IntrinsicDirty::FrameAncestorsAndDescendants);
+ }
+ 
+-bool nsIFrame::IsReplaced() const {
+-  if (HasAnyClassFlag(ClassFlags::Replaced)) {
+-    return true;
+-  }
+-  if (!Style()->IsAnonBox() && mContent->IsHTMLElement(nsGkAtoms::button)) {
+-    // Button always behaves as a replaced element.
+-    return true;
+-  }
+-  return false;
+-}
+-
+ bool nsIFrame::ShouldPropagateRepaintsToRoot() const {
+   if (!IsPrimaryFrame()) {
+     // special case for table frames because style images are associated to the
+@@ -4774,10 +4763,13 @@ bool nsIFrame::ShouldHaveLineIfEmpty() const {
+       break;
+     case PseudoStyleType::scrolledContent:
+       return GetParent()->ShouldHaveLineIfEmpty();
++    case PseudoStyleType::buttonContent:
++      // HTML quirk.
++      return GetContent()->IsHTMLElement(nsGkAtoms::input);
+     default:
+       return false;
+   }
+-  return IsInputButtonControlFrame() || IsEditingHost(this);
++  return IsEditingHost(this);
+ }
+ 
+ /**
+@@ -8624,13 +8616,9 @@ inline static bool FormControlShrinksForPercentSize(const nsIFrame* aFrame) {
+     case LayoutFrameType::ImageControl:
+       return true;
+     default:
+-      // True buttons (<button>, backed by block/grid/flex frame) and most
+-      // button-flavored <inputs> (those backed by InputButtonControlFrame)
+-      // don't have this shrinking behavior. But color-inputs and comboboxes do;
+-      // and both of those derive from ButtonControlFrame. So: we can't easily
+-      // use do_QueryFrame to differentiate the buttons-that-do vs. the
+-      // buttons-that-don't. So we explicitly list the buttons-that-do by
+-      // LayoutFrameType above, and the others fall into this catch-all.
++      // Buttons (GfxButtonControl / HTMLButtonControl) don't have this
++      // shrinking behavior.  (Note that color inputs do, even though they
++      // inherit from button, so we can't use do_QueryFrame here.)
+       return false;
+   }
+ }
+@@ -8672,6 +8660,7 @@ bool nsIFrame::IsPercentageResolvedAgainstZero(const LengthPercentage& aSize,
+ bool nsIFrame::IsBlockWrapper() const {
+   auto pseudoType = Style()->GetPseudoType();
+   return pseudoType == PseudoStyleType::mozBlockInsideInlineWrapper ||
++         pseudoType == PseudoStyleType::buttonContent ||
+          pseudoType == PseudoStyleType::cellContent ||
+          pseudoType == PseudoStyleType::columnSpanWrapper;
+ }
+@@ -12240,6 +12229,7 @@ PhysicalAxes nsIFrame::ShouldApplyOverflowClipping(
+     switch (type) {
+       case LayoutFrameType::CheckboxRadio:
+       case LayoutFrameType::ComboboxControl:
++      case LayoutFrameType::HTMLButtonControl:
+       case LayoutFrameType::ListControl:
+       case LayoutFrameType::Progress:
+       case LayoutFrameType::Range:
+diff --git a/layout/generic/nsIFrame.h b/layout/generic/nsIFrame.h
+index 5be64870e34b..bc8c286a6c3a 100644
+--- a/layout/generic/nsIFrame.h
++++ b/layout/generic/nsIFrame.h
+@@ -620,9 +620,7 @@ enum class LayoutFrameClassFlags : uint16_t {
+   SVG = 1 << 3,
+   SVGContainer = 1 << 4,
+   BidiInlineContainer = 1 << 5,
+-  // The frame is for a replaced element, such as an image. Note that HTML
+-  // <button> elements don't have this flag but still behave as replaced, see
+-  // nsIFrame::IsReplaced().
++  // The frame is for a replaced element, such as an image
+   Replaced = 1 << 6,
+   // A replaced element that has replaced-element sizing characteristics (i.e.,
+   // like images or iframes), as opposed to inline-block sizing characteristics
+@@ -3567,6 +3565,7 @@ class nsIFrame : public nsQueryFrame {
+   CLASS_FLAG_METHOD(IsSVGContainerFrame, SVGContainer);
+   CLASS_FLAG_METHOD(IsBidiInlineContainer, BidiInlineContainer);
+   CLASS_FLAG_METHOD(IsLineParticipant, LineParticipant);
++  CLASS_FLAG_METHOD(IsReplaced, Replaced);
+   CLASS_FLAG_METHOD(HasReplacedSizing, ReplacedSizing);
+   CLASS_FLAG_METHOD(IsTablePart, TablePart);
+   CLASS_FLAG_METHOD0(CanContainOverflowContainers)
+@@ -3604,8 +3603,6 @@ class nsIFrame : public nsQueryFrame {
+ #  pragma clang diagnostic pop
+ #endif
+ 
+-  bool IsReplaced() const;
+-
+   /**
+    * Returns a transformation matrix that converts points in this frame's
+    * coordinate space to points in some ancestor frame's coordinate space.
+diff --git a/layout/generic/nsLineLayout.cpp b/layout/generic/nsLineLayout.cpp
+index d399c87e370e..ca986cd8f990 100644
+--- a/layout/generic/nsLineLayout.cpp
++++ b/layout/generic/nsLineLayout.cpp
+@@ -691,6 +691,8 @@ static bool IsPercentageAware(const nsIFrame* aFrame, WritingMode aWM) {
+     if ((disp->DisplayOutside() == StyleDisplayOutside::Inline &&
+          (disp->DisplayInside() == StyleDisplayInside::FlowRoot ||
+           disp->DisplayInside() == StyleDisplayInside::Table)) ||
++        fType == LayoutFrameType::HTMLButtonControl ||
++        fType == LayoutFrameType::GfxButtonControl ||
+         fType == LayoutFrameType::FieldSet) {
+       return true;
+     }
+diff --git a/layout/generic/nsTextFrame.cpp b/layout/generic/nsTextFrame.cpp
+index 7154d2c7b864..9722282ab071 100644
+--- a/layout/generic/nsTextFrame.cpp
++++ b/layout/generic/nsTextFrame.cpp
+@@ -4864,36 +4864,6 @@ static bool IsUnderlineRight(const ComputedStyle& aStyle) {
+          nsStyleUtil::MatchesLanguagePrefix(langAtom, u"mn");
+ }
+ 
+-static bool FrameStopsLineDecorationPropagation(nsIFrame* aFrame,
+-                                                nsCompatibility aCompatMode) {
+-  // In all modes, if we're on an inline-block/table/grid/flex, we're done.
+-  // If we're on a ruby frame other than ruby text container, we
+-  // should continue.
+-  mozilla::StyleDisplay display = aFrame->GetDisplay();
+-  if (!display.IsInlineFlow() &&
+-      (!display.IsRuby() ||
+-       display == mozilla::StyleDisplay::RubyTextContainer) &&
+-      display.IsInlineOutside()) {
+-    return true;
+-  }
+-  // In quirks mode, if we're on an HTML table element, we're done.
+-  if (aCompatMode == eCompatibility_NavQuirks &&
+-      aFrame->GetContent()->IsHTMLElement(nsGkAtoms::table)) {
+-    return true;
+-  }
+-  // If we're on an absolutely-positioned element or a floating
+-  // element, we're done.
+-  if (aFrame->HasAnyStateBits(NS_FRAME_OUT_OF_FLOW)) {
+-    return true;
+-  }
+-  // If we're an outer <svg> element, which is classified as an atomic
+-  // inline-level element, we're done.
+-  if (aFrame->IsSVGOuterSVGFrame()) {
+-    return true;
+-  }
+-  return false;
+-}
+-
+ void nsTextFrame::GetTextDecorations(
+     nsPresContext* aPresContext,
+     nsTextFrame::TextDecorationColorResolution aColorResolution,
+@@ -5071,7 +5035,34 @@ void nsTextFrame::GetTextDecorations(
+             !ignoreSubproperties));
+       }
+     }
+-    if (FrameStopsLineDecorationPropagation(f, compatMode)) {
++
++    // In all modes, if we're on an inline-block/table/grid/flex (or
++    // -moz-inline-box), we're done.
++    // If we're on a ruby frame other than ruby text container, we
++    // should continue.
++    mozilla::StyleDisplay display = f->GetDisplay();
++    if (!display.IsInlineFlow() &&
++        (!display.IsRuby() ||
++         display == mozilla::StyleDisplay::RubyTextContainer) &&
++        display.IsInlineOutside()) {
++      break;
++    }
++
++    // In quirks mode, if we're on an HTML table element, we're done.
++    if (compatMode == eCompatibility_NavQuirks &&
++        f->GetContent()->IsHTMLElement(nsGkAtoms::table)) {
++      break;
++    }
++
++    // If we're on an absolutely-positioned element or a floating
++    // element, we're done.
++    if (f->IsFloating() || f->IsAbsolutelyPositioned()) {
++      break;
++    }
++
++    // If we're an outer <svg> element, which is classified as an atomic
++    // inline-level element, we're done.
++    if (f->IsSVGOuterSVGFrame()) {
+       break;
+     }
+   }
+diff --git a/layout/reftests/bugs/541382-1-ref.html b/layout/reftests/bugs/541382-1-ref.html
+index 80e9d5aa7ebb..4f6db950dd69 100644
+--- a/layout/reftests/bugs/541382-1-ref.html
++++ b/layout/reftests/bugs/541382-1-ref.html
+@@ -1,6 +1,8 @@
+ <!DOCTYPE html>
+ <html>
+   <body>
+-    <button style="height: 20px; overflow: hidden; text-indent: 300px; width: 200px;">a</button>
++    <button style="height: 20px; overflow: hidden; text-indent: 300px; width: 200px;">a</button><br>
++    <button style="height: 20px; overflow: scroll; text-indent: 300px; width: 200px;">b</button><br>
++    <button style="height: 20px; overflow: auto; text-indent: 300px; width: 200px;">c</button>
+   </body>
+ </html>
+diff --git a/layout/reftests/bugs/541382-1.html b/layout/reftests/bugs/541382-1.html
+index 7e14c39b71ae..c4ce5919fdb2 100644
+--- a/layout/reftests/bugs/541382-1.html
++++ b/layout/reftests/bugs/541382-1.html
+@@ -1,6 +1,8 @@
+ <!DOCTYPE html>
+ <html>
+   <body>
+-    <button style="height: 20px; overflow: hidden; text-indent: 300px; width: 200px;">text</button>
++    <button style="height: 20px; overflow: hidden; text-indent: 300px; width: 200px;">text</button><br>
++    <button style="height: 20px; overflow: scroll; text-indent: 300px; width: 200px;">text</button><br>
++    <button style="height: 20px; overflow: auto; text-indent: 300px; width: 200px;">text</button>
+   </body>
+ </html>
+diff --git a/layout/reftests/bugs/825999-ref.html b/layout/reftests/bugs/825999-ref.html
+index aa938ce0a374..8bc2903881df 100644
+--- a/layout/reftests/bugs/825999-ref.html
++++ b/layout/reftests/bugs/825999-ref.html
+@@ -15,9 +15,7 @@
+                 padding-left:6px;
+                 padding-right:17px;
+                 outline: 1px solid blue;
+-                margin: 2px;
+             }
+-            button, select { display: block }
+             span {
+                 display:inline-block;
+                 overflow:visible;
+@@ -44,7 +42,6 @@
+                 height: 100%;
+                 background: lime;
+             }
+-            .bb, .cb { width: 300px; display: inline-block }
+             .bb * {
+                 box-sizing: border-box;
+             }
+diff --git a/layout/reftests/bugs/825999.html b/layout/reftests/bugs/825999.html
+index 82486db1a541..1c9f494a116b 100644
+--- a/layout/reftests/bugs/825999.html
++++ b/layout/reftests/bugs/825999.html
+@@ -15,10 +15,7 @@
+                 padding-left:6px;
+                 padding-right:17px;
+                 outline: 1px solid blue;
+-                margin: 2px;
+             }
+-            /* Avoid baseline differences between scrollable and non-scrollable buttons */
+-            button, select { display: block }
+             span {
+                 display:inline-block;
+                 overflow: hidden;
+@@ -39,7 +36,6 @@
+                    of <x>'s. */
+                 padding-right: 16px;
+             }
+-            .bb, .cb { width: 300px; display: inline-block }
+             .bb * {
+                 box-sizing: border-box;
+             }
+diff --git a/layout/reftests/forms/button/overflow-areas-1-ref.html b/layout/reftests/forms/button/overflow-areas-1-ref.html
+index 953cb8d7bb13..a1eb505753ea 100644
+--- a/layout/reftests/forms/button/overflow-areas-1-ref.html
++++ b/layout/reftests/forms/button/overflow-areas-1-ref.html
+@@ -38,9 +38,11 @@
+   <input  class="oh" type="reset">
+   <input  class="oh" type="submit">
+   <input  class="oh" type="button" value="InputTypeButton">
++  <button class="oh">ActualButton</button>
+ 
+   <input  class="oh" type="reset">
+   <input  class="oh" type="submit">
+   <input  class="oh" type="button" value="InputTypeButton">
++  <button class="oh">ActualButton</button>
+ </body>
+ </html>
+diff --git a/layout/reftests/forms/button/overflow-areas-1.html b/layout/reftests/forms/button/overflow-areas-1.html
+index a43aa86d6221..b1a34dfe403e 100644
+--- a/layout/reftests/forms/button/overflow-areas-1.html
++++ b/layout/reftests/forms/button/overflow-areas-1.html
+@@ -41,9 +41,11 @@
+   <input  class="oa" type="reset">
+   <input  class="oa" type="submit">
+   <input  class="oa" type="button" value="InputTypeButton">
++  <button class="oa">ActualButton</button>
+ 
+   <input  class="os" type="reset">
+   <input  class="os" type="submit">
+   <input  class="os" type="button" value="InputTypeButton">
++  <button class="os">ActualButton</button>
+ </body>
+ </html>
+diff --git a/layout/style/nsCSSAnonBoxList.h b/layout/style/nsCSSAnonBoxList.h
+index 9ac6c471f61f..4d62f5bd7940 100644
+--- a/layout/style/nsCSSAnonBoxList.h
++++ b/layout/style/nsCSSAnonBoxList.h
+@@ -95,6 +95,7 @@ CSS_WRAPPER_ANON_BOX(mozMathMLAnonymousBlock, ":-moz-mathml-anonymous-block")
+ 
+ CSS_ANON_BOX(mozLineFrame, ":-moz-line-frame")
+ 
++CSS_ANON_BOX(buttonContent, ":-moz-button-content")
+ CSS_ANON_BOX(cellContent, ":-moz-cell-content")
+ CSS_ANON_BOX(dropDownList, ":-moz-dropdown-list")
+ CSS_ANON_BOX(fieldsetContent, ":-moz-fieldset-content")
+diff --git a/layout/style/res/forms.css b/layout/style/res/forms.css
+index ca8b31da610d..ef2d5cc6f873 100644
+--- a/layout/style/res/forms.css
++++ b/layout/style/res/forms.css
+@@ -22,7 +22,7 @@
+   box-decoration-break: inherit;
+   block-size: 100%; /* Need this so percentage block-sizes of kids work right */
+   /* Please keep the declarations below in sync with ::-moz-scrolled-content in
+-     ua.css. */
++     ua.css and ::-moz-button-content below. */
+   content: inherit;
+   /* Multicol container */
+   column-count: inherit;
+@@ -535,6 +535,41 @@ button,
+   display: inline-block;
+ }
+ 
++*|*::-moz-button-content {
++  display: block;
++  /* Please keep the declarations below in sync with ::-moz-scrolled-content in
++     ua.css and ::-moz-fieldset-content above. */
++  content: inherit;
++  /* Multicol container */
++  column-count: inherit;
++  column-width: inherit;
++  column-gap: inherit;
++  column-rule: inherit;
++  column-fill: inherit;
++  /* Flex container */
++  flex-direction: inherit;
++  flex-wrap: inherit;
++  /* -webkit-box container (aliased from -webkit versions to -moz versions) */
++  -moz-box-orient: inherit;
++  -moz-box-direction: inherit;
++  -moz-box-pack: inherit;
++  -moz-box-align: inherit;
++  /* Grid container */
++  grid-auto-columns: inherit;
++  grid-auto-rows: inherit;
++  grid-auto-flow: inherit;
++  grid-column-gap: inherit;
++  grid-row-gap: inherit;
++  grid-template-areas: inherit;
++  grid-template-columns: inherit;
++  grid-template-rows: inherit;
++  /* CSS Align */
++  align-content: inherit;
++  align-items: inherit;
++  justify-content: inherit;
++  justify-items: inherit;
++}
++
+ ::file-selector-button:hover,
+ button:hover,
+ input:is([type="reset"], [type="button"], [type="submit"], [type="color"]):hover {
+@@ -610,6 +645,10 @@ input[type="file"] > label {
+  *  inherit into the scroll frame with pseudo ::-moz-text-control-editing-root
+  *  which is a (direct or indirect) child of the text control.
+  *
++ * Buttons (either <button>, <input type=submit>, <input type=button>
++ *          or <input type=reset>)
++ *  inherit into the ':-moz-button-content' pseudo-element.
++ *
+  * <select>:
+  *  inherit into the label and the <optgroup>'s ':before' pseudo-element,
+  *  which is where the label of the <optgroup> gets displayed. The <option>s
+@@ -617,6 +656,7 @@ input[type="file"] > label {
+  */
+ ::placeholder,
+ ::-moz-text-control-editing-root,
++*|*::-moz-button-content,
+ select > label,
+ optgroup::before {
+   unicode-bidi: inherit;
+diff --git a/layout/style/res/ua.css b/layout/style/res/ua.css
+index 14e7bb136b3b..edd0f245d08e 100644
+--- a/layout/style/res/ua.css
++++ b/layout/style/res/ua.css
+@@ -234,8 +234,8 @@
+      blocks with overflow: scroll; */
+   unicode-bidi: inherit;
+   text-overflow: inherit;
+-  /* Please keep the declarations below in sync with ::-moz-fieldset-content
+-     in forms.css */
++  /* Please keep the declarations below in sync with ::-moz-fieldset-content /
++     ::-moz-button-content in forms.css */
+   content: inherit;
+   /* Multicol container */
+   column-count: inherit;
+diff --git a/servo/components/style/style_adjuster.rs b/servo/components/style/style_adjuster.rs
+index 903b73a84cce..a90fe4e94b5a 100644
+--- a/servo/components/style/style_adjuster.rs
++++ b/servo/components/style/style_adjuster.rs
+@@ -206,7 +206,7 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
+             return pseudo.skip_item_display_fixup();
+         }
+ 
+-        element.is_some_and(|e| e.skip_item_display_fixup())
++        element.map_or(false, |e| e.skip_item_display_fixup())
+     }
+ 
+     /// Apply the blockification rules based on the table in CSS 2.2 section 9.7.
+@@ -969,6 +969,9 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
+         #[cfg(feature = "gecko")]
+         {
+             self.adjust_for_ruby(layout_parent_style, element);
++        }
++        #[cfg(feature = "gecko")]
++        {
+             self.adjust_for_appearance(element);
+             self.adjust_for_marker_pseudo();
+         }
+diff --git a/servo/components/style/values/specified/box.rs b/servo/components/style/values/specified/box.rs
+index f2b8f859303a..b68735044abb 100644
+--- a/servo/components/style/values/specified/box.rs
++++ b/servo/components/style/values/specified/box.rs
+@@ -332,10 +332,12 @@ impl Display {
+     /// Convert this display into an equivalent block display.
+     ///
+     /// Also used for :root style adjustments.
+-    pub fn equivalent_block_display(&self, is_root_element: bool) -> Self {
+-        // Special handling for `contents` and `list-item`s on the root element.
+-        if is_root_element && (self.is_contents() || self.is_list_item()) {
+-            return Display::Block;
++    pub fn equivalent_block_display(&self, _is_root_element: bool) -> Self {
++        {
++            // Special handling for `contents` and `list-item`s on the root element.
++            if _is_root_element && (self.is_contents() || self.is_list_item()) {
++                return Display::Block;
++            }
+         }
+ 
+         match self.outside() {
+diff --git a/testing/web-platform/meta/css/css-contain/contain-layout-button-001.tentative.html.ini b/testing/web-platform/meta/css/css-contain/contain-layout-button-001.tentative.html.ini
+new file mode 100644
+index 000000000000..0ce7c8a28a5f
+--- /dev/null
++++ b/testing/web-platform/meta/css/css-contain/contain-layout-button-001.tentative.html.ini
+@@ -0,0 +1,2 @@
++[contain-layout-button-001.tentative.html]
++  expected: FAIL
+diff --git a/testing/web-platform/meta/css/css-contain/contain-layout-button-002.tentative.html.ini b/testing/web-platform/meta/css/css-contain/contain-layout-button-002.tentative.html.ini
+new file mode 100644
+index 000000000000..ae4f9365ffd7
+--- /dev/null
++++ b/testing/web-platform/meta/css/css-contain/contain-layout-button-002.tentative.html.ini
+@@ -0,0 +1,2 @@
++[contain-layout-button-002.tentative.html]
++  expected: FAIL
+diff --git a/testing/web-platform/tests/css/css-contain/contain-layout-baseline-005.html b/testing/web-platform/tests/css/css-contain/contain-layout-baseline-005.html
+index 407819794ad6..61d17a08f7b3 100644
+--- a/testing/web-platform/tests/css/css-contain/contain-layout-baseline-005.html
++++ b/testing/web-platform/tests/css/css-contain/contain-layout-baseline-005.html
+@@ -43,6 +43,7 @@ fieldset, details {
+ <div class="wrapper">
+   <canvas></canvas>
+   <div class="inline-block">foo</div>
++  <select><option>foo</option></select>
+   <select multiple style="height: 40px;"><option>foo</option></select>
+   <textarea style="height: 40px;"></textarea>
+ </div>
+diff --git a/testing/web-platform/tests/css/css-contain/contain-layout-select-001.tentative.html b/testing/web-platform/tests/css/css-contain/contain-layout-select-001.tentative.html
+deleted file mode 100644
+index 1fb306210914..000000000000
+--- a/testing/web-platform/tests/css/css-contain/contain-layout-select-001.tentative.html
++++ /dev/null
+@@ -1,17 +0,0 @@
+-<!doctype html>
+-<link rel="help" href="https://drafts.csswg.org/css-contain-1/#containment-layout">
+-<link rel="help" href="https://github.com/web-platform-tests/wpt/issues/45889">
+-<link rel="match" href="reference/contain-layout-select-001-ref.html">
+-<meta name=assert content="Select and button align when layout-contained">
+-<style>
+-button, select {
+-  appearance: none;
+-  contain: layout;
+-  width: 20px;
+-  height: 20px;
+-  border: 2px solid;
+-  margin: 5px;
+-  padding: 2px;
+-}
+-</style>
+-<button></button><select></select>
+diff --git a/testing/web-platform/tests/css/css-contain/reference/contain-layout-baseline-005-ref.html b/testing/web-platform/tests/css/css-contain/reference/contain-layout-baseline-005-ref.html
+index ad1e2df1db2f..83340137ac6a 100644
+--- a/testing/web-platform/tests/css/css-contain/reference/contain-layout-baseline-005-ref.html
++++ b/testing/web-platform/tests/css/css-contain/reference/contain-layout-baseline-005-ref.html
+@@ -39,6 +39,7 @@ fieldset, details {
+ <div class="wrapper">
+   <canvas></canvas>
+   <div class="inline-block">foo</div>
++  <select><option>foo</option></select>
+   <select multiple style="height: 40px;"><option>foo</option></select>
+   <textarea style="height: 40px;"></textarea>
+ </div>
+diff --git a/testing/web-platform/tests/css/css-contain/reference/contain-layout-select-001-ref.html b/testing/web-platform/tests/css/css-contain/reference/contain-layout-select-001-ref.html
+deleted file mode 100644
+index b28ae217b595..000000000000
+--- a/testing/web-platform/tests/css/css-contain/reference/contain-layout-select-001-ref.html
++++ /dev/null
+@@ -1,13 +0,0 @@
+-<!doctype html>
+-<style>
+-button {
+-  appearance: none;
+-  contain: layout;
+-  width: 20px;
+-  height: 20px;
+-  border: 2px solid;
+-  margin: 5px;
+-  padding: 2px;
+-}
+-</style>
+-<button></button><button></button>
+diff --git a/testing/web-platform/tests/css/css-position/containing-block-change-button-ref.html b/testing/web-platform/tests/css/css-position/containing-block-change-button-ref.html
+index 3aa843855b9a..c5beee9359c8 100644
+--- a/testing/web-platform/tests/css/css-position/containing-block-change-button-ref.html
++++ b/testing/web-platform/tests/css/css-position/containing-block-change-button-ref.html
+@@ -4,7 +4,7 @@
+   #button {
+     width: 400px;
+     height: 400px;
+-    margin: 50px;
++    margin: 100px;
+     padding: 0;
+     border: 0;
+     background-color: purple;
+diff --git a/testing/web-platform/tests/css/css-position/containing-block-change-button.html b/testing/web-platform/tests/css/css-position/containing-block-change-button.html
+index f5fd9385654a..a4d20685ce9f 100644
+--- a/testing/web-platform/tests/css/css-position/containing-block-change-button.html
++++ b/testing/web-platform/tests/css/css-position/containing-block-change-button.html
+@@ -10,7 +10,7 @@
+   #button {
+     width: 400px;
+     height: 400px;
+-    margin: 50px;
++    margin: 100px;
+     background-color: purple;
+     border: 0;
+     padding: 10px;
+diff --git a/testing/web-platform/tests/html/rendering/widgets/button-layout/scrollbars.html b/testing/web-platform/tests/html/rendering/widgets/button-layout/scrollbars.html
+deleted file mode 100644
+index b27cddcb910f..000000000000
+--- a/testing/web-platform/tests/html/rendering/widgets/button-layout/scrollbars.html
++++ /dev/null
+@@ -1,40 +0,0 @@
+-<!doctype html>
+-<meta charset="utf-8">
+-<link rel="author" href="mailto:emilio@crisal.io" title="Emilio Cobos Álvarez">
+-<link rel="author" href="https://mozilla.org" title="Mozilla">
+-<link rel="help" href="https://bugzilla.mozilla.org/show_bug.cgi?id=1873301">
+-<link rel="help" href="https://html.spec.whatwg.org/#button-layout">
+-<link rel="match" href="/css/reference/ref-filled-green-100px-square-only.html">
+-<title>Buttons support being scrolled</title>
+-<style>
+-  button {
+-    display: block;
+-    width: 100px;
+-    height: 100px;
+-    background-color: red;
+-    border: 0;
+-    padding: 0;
+-    margin: 0;
+-    overflow: auto;
+-    scrollbar-width: none;
+-  }
+-  .filler {
+-    display: block;
+-    background: red;
+-    height: 400px;
+-  }
+-  .inner {
+-    display: block;
+-    width: 100px;
+-    height: 100px;
+-    background-color: green;
+-  }
+-</style>
+-<p>Test passes if there is a filled green square.</p>
+-<button>
+-  <span class="filler"></span>
+-  <span class="inner"></span>
+-</button>
+-<script>
+-  document.querySelector("button").scrollTop = 400;
+-</script>
+diff --git a/xpcom/ds/StaticAtoms.py b/xpcom/ds/StaticAtoms.py
+index 73450019e7fd..ed55a1df5ab4 100644
+--- a/xpcom/ds/StaticAtoms.py
++++ b/xpcom/ds/StaticAtoms.py
+@@ -2572,6 +2572,7 @@ STATIC_ATOMS = [
+     InheritingAnonBoxAtom("AnonBox_mozBlockInsideInlineWrapper", ":-moz-block-inside-inline-wrapper"),
+     InheritingAnonBoxAtom("AnonBox_mozMathMLAnonymousBlock", ":-moz-mathml-anonymous-block"),
+     InheritingAnonBoxAtom("AnonBox_mozLineFrame", ":-moz-line-frame"),
++    InheritingAnonBoxAtom("AnonBox_buttonContent", ":-moz-button-content"),
+     InheritingAnonBoxAtom("AnonBox_cellContent", ":-moz-cell-content"),
+     InheritingAnonBoxAtom("AnonBox_dropDownList", ":-moz-dropdown-list"),
+     InheritingAnonBoxAtom("AnonBox_fieldsetContent", ":-moz-fieldset-content"),
