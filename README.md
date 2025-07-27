@@ -29,7 +29,7 @@ Windows 7, 8, 10, 11 or Windows Vista with Service Pack 2 (SP2) and Platform Upd
 
 2. Building [Rust](https://github.com/rust-lang/rust) on Windows MSVC
 
-   To ensure that `rustc` always generates programs compatible with Windows 7, Rust needs to be patched. This repository contains files named `Rust<rust_version>win7.diff` for this purpose, where `rust_version` is the version of Rust used to build Firefox, as specified [here](https://github.com/mozilla-firefox/firefox/blob/main/docs/writing-rust-code/update-policy.md).
+   To ensure that `rustc` always generates programs compatible with Windows 7, Rust needs to be patched. This repository contains files named `Rust<rust_version>win7.diff` for this purpose, where `rust_version` is the version of Rust used to build Firefox, as specified [here](https://github.com/mozilla-firefox/firefox/blob/main/docs/writing-rust-code/update-policy.md). For detailed instructions on how to proceed, please refer to https://github.com/e3kskoy7wqk/Firefox-for-windows-7/issues/75.
 
    - Clone the source with `git`
 
