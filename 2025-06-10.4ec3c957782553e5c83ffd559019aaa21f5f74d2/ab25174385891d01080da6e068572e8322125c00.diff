@@ -2404,7 +2404,7 @@ index 40b4fdd66cf5..2289274c8f09 100644
    &:where([_moz-menuactive]:not([disabled="true"])) {
      color: -moz-menuhovertext;
      background-color: -moz-menuhover;
-@@ -125,14 +146,42 @@ menuitem {
+@@ -125,14 +146,35 @@ menuitem {
      background-color: -moz-menuhoverdisabled;
    }
  }
@@ -2424,13 +2424,6 @@ index 40b4fdd66cf5..2289274c8f09 100644
    font-weight: bold;
  }
  
-+/* Don't leave space for icons on Win10. */
-+@media (-moz-windows-non-native-menus) {
-+  .menu-text {
-+    padding-inline-start: 0 !important;
-+  }
-+}
-+
  /* ..... menu arrow box ..... */
  
 +.menu-right {
@@ -2506,6 +2499,20 @@ index 5af1892fd53d..c35a842dde6e 100644
  *|*:root[lwtheme] {
    menubar > menu {
      appearance: none;
+@@ -59,6 +59,13 @@ menubar > menu:-moz-window-inactive {
+   padding-top: 2px;
+ }
+ 
++/* Don't leave space for icons on Win10. */
++@media (-moz-windows-non-native-menus) {
++  .menu-text {
++    padding-inline-start: 0 !important;
++  }
++}
++
+ menuitem:is([type="checkbox"], [type="radio"]):not([checked="true"]) > .menu-iconic-left > .menu-iconic-icon {
+   display: none;
+ }
 @@ -70,6 +96,18 @@ menubar > menu[_moz-menuactive="true"]:not([disabled="true"]) {
  }
  

@@ -1,0 +1,2718 @@
+diff --git a/ipc/glue/GeckoChildProcessHost.cpp b/ipc/glue/GeckoChildProcessHost.cpp
+index 8445a6340fb6..c1b1c52a190e 100644
+--- a/ipc/glue/GeckoChildProcessHost.cpp
++++ b/ipc/glue/GeckoChildProcessHost.cpp
+@@ -1131,15 +1131,14 @@ Result<Ok, LaunchError> BaseProcessLauncher::DoSetup() {
+       return Err(LaunchError("DuplicateFileHandle failed"));
+     }
+     geckoargs::sCrashReporter.Put(std::move(childCrashFd), mChildArgs);
+-#endif  // XP_UNIX && !XP_IOS
+ 
+-    UniqueFileHandle crashHelperClientFd =
+-        CrashReporter::RegisterChildIPCChannel();
+-    if (!crashHelperClientFd) {
+-      return Err(
+-          LaunchError("Could not create an IPC channel to the crash helper"));
++#  if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++    CrashReporter::ProcessId pid = CrashReporter::GetCrashHelperPid();
++    if (pid != base::kInvalidProcessId) {
++      geckoargs::sCrashHelperPid.Put(pid, mChildArgs);
+     }
+-    geckoargs::sCrashHelper.Put(std::move(crashHelperClientFd), mChildArgs);
++#  endif  // defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++#endif    // XP_UNIX && !XP_IOS
+   }
+ 
+   return Ok();
+diff --git a/toolkit/crashreporter/crash_helper_client/src/lib.rs b/toolkit/crashreporter/crash_helper_client/src/lib.rs
+index 5a83a5ccab73..c8cb63461d73 100644
+--- a/toolkit/crashreporter/crash_helper_client/src/lib.rs
++++ b/toolkit/crashreporter/crash_helper_client/src/lib.rs
+@@ -5,8 +5,7 @@
+ use anyhow::{bail, Result};
+ use crash_helper_common::{
+     messages::{self},
+-    AncillaryData, BreakpadString, IPCClientChannel, IPCConnector, ProcessHandle,
+-    INVALID_ANCILLARY_DATA,
++    BreakpadString, IPCConnector,
+ };
+ #[cfg(any(target_os = "android", target_os = "linux"))]
+ use minidump_writer::minidump_writer::{AuxvType, DirectAuxvDumpInfo};
+@@ -14,13 +13,7 @@ use minidump_writer::minidump_writer::{AuxvType, DirectAuxvDumpInfo};
+ use std::os::fd::RawFd;
+ use std::{
+     ffi::{c_char, CString, OsString},
+-    hint::spin_loop,
+     ptr::null_mut,
+-    sync::{
+-        atomic::{AtomicBool, Ordering},
+-        OnceLock,
+-    },
+-    thread::{self, JoinHandle},
+ };
+ #[cfg(target_os = "windows")]
+ use windows_sys::Win32::System::Diagnostics::Debug::{CONTEXT, EXCEPTION_RECORD};
+@@ -33,8 +26,8 @@ mod platform;
+ 
+ pub struct CrashHelperClient {
+     connector: IPCConnector,
+-    spawner_thread: Option<JoinHandle<Result<ProcessHandle>>>,
+-    helper_process: Option<ProcessHandle>,
++    #[cfg(target_os = "linux")]
++    pid: Pid,
+ }
+ 
+ impl CrashHelperClient {
+@@ -44,39 +37,6 @@ impl CrashHelperClient {
+         Ok(())
+     }
+ 
+-    fn register_child_process(&mut self) -> Result<AncillaryData> {
+-        let ipc_channel = IPCClientChannel::new()?;
+-        let (server_endpoint, client_endpoint) = ipc_channel.deconstruct();
+-
+-        if let Some(join_handle) = self.spawner_thread.take() {
+-            let Ok(process_handle) = join_handle.join() else {
+-                bail!("The spawner thread failed to execute");
+-            };
+-
+-            let Ok(process_handle) = process_handle else {
+-                bail!("The crash helper process failed to launch");
+-            };
+-
+-            self.helper_process = Some(process_handle);
+-        }
+-
+-        if self.helper_process.is_none() {
+-            bail!("The crash helper process is not available");
+-        };
+-
+-        let Ok(ancillary_data) = server_endpoint.into_ancillary(&self.helper_process) else {
+-            bail!("Could not convert the server IPC endpoint");
+-        };
+-
+-        let message = messages::RegisterChildProcess::new(ancillary_data);
+-        self.connector.send_message(&message)?;
+-        let Ok(ancillary_data) = client_endpoint.into_ancillary(/* dst_process */ &None) else {
+-            bail!("Could not convert the local IPC endpoint");
+-        };
+-
+-        Ok(ancillary_data)
+-    }
+-
+     #[cfg(any(target_os = "android", target_os = "linux"))]
+     fn register_auxv_info(&mut self, pid: Pid, auxv_info: DirectAuxvDumpInfo) -> Result<()> {
+         let message = messages::RegisterAuxvInfo::new(pid, auxv_info);
+@@ -116,10 +76,6 @@ impl CrashHelperClient {
+     }
+ }
+ 
+-/******************************************************************************
+- * Main process interface                                                     *
+- ******************************************************************************/
+-
+ /// Launch the crash helper process, initialize it and connect to it. Returns
+ /// a pointer to the client connection or `null` upon failure.
+ ///
+@@ -189,6 +145,19 @@ pub unsafe extern "C" fn crash_helper_shutdown(client: *mut CrashHelperClient) {
+     let _crash_helper_box = Box::from_raw(client);
+ }
+ 
++/// Return the pid of the crash helper process.
++///
++/// # Safety
++///
++/// The `client` parameter must be a valid pointer to the crash helper client
++/// object returned by the [`crash_helper_launch()`] or
++/// [`crash_helper_connect()`] functions.
++#[cfg(target_os = "linux")]
++#[no_mangle]
++pub unsafe extern "C" fn crash_helper_pid(client: *const CrashHelperClient) -> Pid {
++    (*client).pid
++}
++
+ #[repr(C)]
+ pub struct CrashReport {
+     path: *mut BreakpadChar,
+@@ -212,30 +181,6 @@ pub unsafe extern "C" fn set_crash_report_path(
+     client.set_crash_report_path(path).is_ok()
+ }
+ 
+-/// Creates a new IPC channel to connect a soon-to-be-created child process
+-/// with the crash helper client. The server-side endpoint of this channel
+-/// will be sent to the crash helper, and the client-side endpoint will be
+-/// returned.
+-///
+-/// This function will return an invalid file handle if creation failed.
+-///
+-/// # Safety
+-///
+-/// The `client` parameter must be a valid pointer to the crash helper client
+-/// object returned by the [`crash_helper_launch()`] or
+-/// [`crash_helper_connect()`] functions.
+-#[no_mangle]
+-pub unsafe extern "C" fn register_child_ipc_channel(
+-    client: *mut CrashHelperClient,
+-) -> AncillaryData {
+-    let client = client.as_mut().unwrap();
+-    if let Ok(client_endpoint) = client.register_child_process() {
+-        client_endpoint
+-    } else {
+-        INVALID_ANCILLARY_DATA
+-    }
+-}
+-
+ /// Request the crash report generated for the process associated with `pid`.
+ /// If the crash report is found an object holding a pointer to the minidump
+ /// and a potential error message will be returned. Otherwise the function will
+@@ -300,11 +245,8 @@ pub unsafe fn report_external_exception(
+     let message =
+         messages::WindowsErrorReportingMinidump::new(pid, thread, exception_records, context);
+ 
+-    // In the code below we connect to the crash helper, send our message and
+-    // wait for a reply before returning, but we ignore errors because we
+-    // can't do anything about them in the calling code.
+-    let server_addr = crash_helper_common::server_addr(main_process_pid);
+-    if let Ok(connector) = IPCConnector::connect(&server_addr) {
++    // In the code below we connect to the crash helper, send our message and wait for a reply before returning, but we ignore errors because we can't do anything about them in the calling code
++    if let Ok(connector) = IPCConnector::connect(main_process_pid) {
+         let _ = connector
+             .send_message(&message)
+             .and_then(|_| connector.recv_reply::<messages::WindowsErrorReportingMinidumpReply>());
+@@ -373,73 +315,3 @@ pub unsafe extern "C" fn unregister_child_auxv_info(
+     let client = client.as_mut().unwrap();
+     client.unregister_auxv_info(pid).is_ok()
+ }
+-
+-/******************************************************************************
+- * Child process interface                                                    *
+- ******************************************************************************/
+-
+-// This contains the raw IPC endpoint that a child will use to reach out to
+-// the crash helper process. We explicitly store it in its raw form rather
+-// than as an IPCConnector because the latter is neither thread-safe nor
+-// signal/exception-safe. We will access this endpoint only from within the
+-// exception handler with bare syscalls so we can leave the `IPCConnector`
+-// object behind.
+-static CHILD_IPC_ENDPOINT: OnceLock<Box<AncillaryData>> = OnceLock::new();
+-static RENDEZVOUS_FAILED: AtomicBool = AtomicBool::new(false);
+-
+-/// Let a client rendez-vous with the crash helper process. This step ensures
+-/// the crash helper will be able to dump the calling child. This will also
+-/// serve additional functionality in the future.
+-///
+-/// # Safety
+-///
+-/// This function is safe to use if the `client_endpoint` parameter contains
+-/// a valid pipe handle (on Windows) or a valid file descriptor (on all other
+-/// platforms).
+-#[no_mangle]
+-pub unsafe extern "C" fn crash_helper_rendezvous(client_endpoint: AncillaryData) {
+-    let Ok(connector) = IPCConnector::from_ancillary(client_endpoint) else {
+-        RENDEZVOUS_FAILED.store(true, Ordering::Relaxed);
+-        return;
+-    };
+-
+-    let join_handle = thread::spawn(move || {
+-        if let Ok(message) = connector.recv_reply::<messages::ChildProcessRegistered>() {
+-            CrashHelperClient::prepare_for_minidump(message.crash_helper_pid);
+-            assert!(
+-                CHILD_IPC_ENDPOINT
+-                    .set(Box::new(connector.into_ancillary(&None).unwrap()))
+-                    .is_ok(),
+-                "The crash_helper_rendezvous() function must only be called once"
+-            );
+-        }
+-
+-        RENDEZVOUS_FAILED.store(true, Ordering::Relaxed);
+-    });
+-
+-    // If we couldn't spawn a thread the join handle will be already marked as
+-    // finished, check for this and flag the rendez-vous as failed. Don't wait
+-    // for the thread though, other failures will be dealt with within the
+-    // thread itself.
+-    if join_handle.is_finished() && join_handle.join().is_err() {
+-        RENDEZVOUS_FAILED.store(true, Ordering::Relaxed);
+-    }
+-}
+-
+-/// Ensure that the rendez-vous with the crash helper has happened. This method
+-/// can be called safely from within an exception handler.
+-///
+-/// # Safety
+-///
+-/// It is always safe to call this function. It's safe even from within an
+-/// exception handler.
+-#[no_mangle]
+-pub unsafe extern "C" fn crash_helper_wait_for_rendezvous() {
+-    while CHILD_IPC_ENDPOINT.get().is_none() {
+-        if RENDEZVOUS_FAILED.load(Ordering::Relaxed) {
+-            break;
+-        }
+-
+-        spin_loop();
+-    }
+-}
+diff --git a/toolkit/crashreporter/crash_helper_client/src/platform.rs b/toolkit/crashreporter/crash_helper_client/src/platform.rs
+index b016a7c6dd28..665f7a2ca0c9 100644
+--- a/toolkit/crashreporter/crash_helper_client/src/platform.rs
++++ b/toolkit/crashreporter/crash_helper_client/src/platform.rs
+@@ -8,8 +8,5 @@ pub(crate) mod windows;
+ #[cfg(any(target_os = "linux", target_os = "macos"))]
+ pub(crate) mod unix;
+ 
+-#[cfg(target_os = "linux")]
+-pub(crate) mod linux;
+-
+ #[cfg(target_os = "android")]
+ pub(crate) mod android;
+diff --git a/toolkit/crashreporter/crash_helper_client/src/platform/android.rs b/toolkit/crashreporter/crash_helper_client/src/platform/android.rs
+index 277a14f79d87..65f003f5704f 100644
+--- a/toolkit/crashreporter/crash_helper_client/src/platform/android.rs
++++ b/toolkit/crashreporter/crash_helper_client/src/platform/android.rs
+@@ -3,7 +3,7 @@
+  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ use anyhow::Result;
+-use crash_helper_common::{IPCConnector, Pid};
++use crash_helper_common::IPCConnector;
+ use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+ 
+ use crate::CrashHelperClient;
+@@ -14,14 +14,6 @@ impl CrashHelperClient {
+         let server_socket = unsafe { OwnedFd::from_raw_fd(server_socket) };
+         let connector = IPCConnector::from_fd(server_socket)?;
+ 
+-        Ok(CrashHelperClient {
+-            connector,
+-            spawner_thread: None,
+-            helper_process: Some(()),
+-        })
+-    }
+-
+-    pub(crate) fn prepare_for_minidump(_crash_helper_pid: Pid) {
+-        // On Android this is currently a no-op
++        Ok(CrashHelperClient { connector })
+     }
+ }
+diff --git a/toolkit/crashreporter/crash_helper_client/src/platform/linux.rs b/toolkit/crashreporter/crash_helper_client/src/platform/linux.rs
+index 92baf599cdc5..d40723fa890e 100644
+--- a/toolkit/crashreporter/crash_helper_client/src/platform/linux.rs
++++ b/toolkit/crashreporter/crash_helper_client/src/platform/linux.rs
+@@ -1,17 +1,0 @@
+-/* This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+-
+-use crash_helper_common::Pid;
+-use nix::libc::{prctl, PR_SET_PTRACER};
+-
+-use crate::CrashHelperClient;
+-
+-impl CrashHelperClient {
+-    pub(crate) fn prepare_for_minidump(crash_helper_pid: Pid) {
+-        unsafe {
+-            // TODO: Log a warning in case we fail to set the ptracer
+-            let _ = prctl(PR_SET_PTRACER, crash_helper_pid);
+-        }
+-    }
+-}
+diff --git a/toolkit/crashreporter/crash_helper_client/src/platform/unix.rs b/toolkit/crashreporter/crash_helper_client/src/platform/unix.rs
+index 92baf599cdc5..d40723fa890e 100644
+--- a/toolkit/crashreporter/crash_helper_client/src/platform/unix.rs
++++ b/toolkit/crashreporter/crash_helper_client/src/platform/unix.rs
+@@ -3,13 +3,8 @@
+  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ use anyhow::Result;
+-use crash_helper_common::{
+-    ignore_eintr, BreakpadChar, BreakpadData, IPCChannel, IPCConnector, IPCListener,
+-};
+-use nix::{
+-    sys::wait::waitpid,
+-    unistd::{execv, fork, getpid, setsid, ForkResult},
+-};
++use crash_helper_common::{BreakpadChar, BreakpadData, IPCChannel, IPCConnector, IPCListener};
++use nix::unistd::{execv, fork, getpid, ForkResult};
+ use std::ffi::{CStr, CString};
+ 
+ use crate::CrashHelperClient;
+@@ -22,7 +17,7 @@ impl CrashHelperClient {
+     ) -> Result<CrashHelperClient> {
+         let channel = IPCChannel::new()?;
+         let (listener, server_endpoint, client_endpoint) = channel.deconstruct();
+-        CrashHelperClient::spawn_crash_helper(
++        let _pid = CrashHelperClient::spawn_crash_helper(
+             program,
+             breakpad_data,
+             minidump_path,
+@@ -32,8 +27,8 @@ impl CrashHelperClient {
+ 
+         Ok(CrashHelperClient {
+             connector: client_endpoint,
+-            spawner_thread: None,
+-            helper_process: Some(()),
++            #[cfg(target_os = "linux")]
++            pid: _pid,
+         })
+     }
+ 
+@@ -43,69 +38,37 @@ impl CrashHelperClient {
+         minidump_path: *const BreakpadChar,
+         listener: IPCListener,
+         endpoint: IPCConnector,
+-    ) -> Result<()> {
++    ) -> Result<nix::libc::pid_t> {
+         let parent_pid = getpid().to_string();
+         let parent_pid_arg = unsafe { CString::from_vec_unchecked(parent_pid.into_bytes()) };
+         let pid = unsafe { fork() }?;
+ 
++        // TODO: daemonize the helper by double fork()'ing and waiting on the child
+         match pid {
+             ForkResult::Child => {
+-                // Create a new process group and a new session, this guarantees
+-                // that the crash helper process will be disconnected from the
+-                // signals of Firefox main process' controlling terminal. Killing
+-                // Firefox via the terminal shouldn't kill the crash helper which
+-                // has its own lifecycle management.
+-                //
+-                // We don't check for errors as there's nothing we can do to
+-                // handle one in this context.
+-                let _ = setsid();
++                let program = unsafe { CStr::from_ptr(program) };
++                let breakpad_data_arg =
++                    unsafe { CString::from_vec_unchecked(breakpad_data.to_string().into_bytes()) };
++                let minidump_path = unsafe { CStr::from_ptr(minidump_path) };
++                let listener_arg = listener.serialize();
++                let endpoint_arg = endpoint.serialize();
+ 
+-                // fork() again to daemonize the process, the parent will wait on
+-                // the first child so that we don't leave zombie processes around.
+-                let pid = unsafe { fork() }.unwrap();
++                let _ = execv(
++                    program,
++                    &[
++                        program,
++                        &parent_pid_arg,
++                        &breakpad_data_arg,
++                        minidump_path,
++                        &listener_arg,
++                        &endpoint_arg,
++                    ],
++                );
+ 
+-                match pid {
+-                    ForkResult::Child => {
+-                        let program = unsafe { CStr::from_ptr(program) };
+-                        let breakpad_data_arg = unsafe {
+-                            CString::from_vec_unchecked(breakpad_data.to_string().into_bytes())
+-                        };
+-                        let minidump_path = unsafe { CStr::from_ptr(minidump_path) };
+-                        let listener_arg = listener.serialize();
+-                        let endpoint_arg = endpoint.serialize();
+-
+-                        let _ = execv(
+-                            program,
+-                            &[
+-                                program,
+-                                &parent_pid_arg,
+-                                &breakpad_data_arg,
+-                                minidump_path,
+-                                &listener_arg,
+-                                &endpoint_arg,
+-                            ],
+-                        );
+-
+-                        // This point should be unreachable, but let's play it safe
+-                        unsafe { nix::libc::_exit(1) };
+-                    }
+-                    _ => unsafe {
+-                        // We're done, exit cleanly
+-                        nix::libc::_exit(0);
+-                    },
+-                }
+-            }
+-            ForkResult::Parent { child } => {
+-                // The child should exit quickly after having forked off the
+-                // actual crash helper process, let's wait for it.
+-                ignore_eintr!(waitpid(child, None))?;
+-                Ok(())
++                // This point should be unreachable, but let's play it safe
++                unsafe { nix::libc::_exit(1) };
+             }
++            ForkResult::Parent { child } => Ok(child.as_raw()),
+         }
+     }
+-
+-    #[cfg(not(target_os = "linux"))]
+-    pub(crate) fn prepare_for_minidump(_pid: crash_helper_common::Pid) {
+-        // This is a no-op on platforms that don't need it
+-    }
+ }
+diff --git a/toolkit/crashreporter/crash_helper_client/src/platform/windows.rs b/toolkit/crashreporter/crash_helper_client/src/platform/windows.rs
+index a7268a1c7d36..21bab086997f 100644
+--- a/toolkit/crashreporter/crash_helper_client/src/platform/windows.rs
++++ b/toolkit/crashreporter/crash_helper_client/src/platform/windows.rs
+@@ -4,15 +4,12 @@
+ 
+ use anyhow::{bail, Result};
+ use crash_helper_common::{
+-    BreakpadChar, BreakpadData, BreakpadString, IPCChannel, IPCConnector, IPCListener, Pid,
++    BreakpadChar, BreakpadData, BreakpadString, IPCChannel, IPCConnector, IPCListener,
+ };
+ use std::{
+     ffi::{OsStr, OsString},
+     mem::{size_of, zeroed},
+-    os::windows::{
+-        ffi::{OsStrExt, OsStringExt},
+-        io::{FromRawHandle, OwnedHandle, RawHandle},
+-    },
++    os::windows::ffi::{OsStrExt, OsStringExt},
+     ptr::{null, null_mut},
+ };
+ use windows_sys::Win32::{
+@@ -39,20 +36,20 @@ impl CrashHelperClient {
+         let channel = IPCChannel::new()?;
+         let (listener, server_endpoint, client_endpoint) = channel.deconstruct();
+ 
+-        let spawner_thread = std::thread::spawn(move || {
+-            CrashHelperClient::spawn_crash_helper(
++        let _ = std::thread::spawn(move || {
++            // If this fails we have no way to tell, but the IPC won't work so
++            // it's fine to ignore the return value.
++            let _ = CrashHelperClient::spawn_crash_helper(
+                 program,
+                 breakpad_data,
+                 minidump_path,
+                 listener,
+                 server_endpoint,
+-            )
++            );
+         });
+ 
+         Ok(CrashHelperClient {
+             connector: client_endpoint,
+-            spawner_thread: Some(spawner_thread),
+-            helper_process: None,
+         })
+     }
+ 
+@@ -62,7 +59,7 @@ impl CrashHelperClient {
+         minidump_path: OsString,
+         listener: IPCListener,
+         endpoint: IPCConnector,
+-    ) -> Result<OwnedHandle> {
++    ) -> Result<()> {
+         // SAFETY: `GetCurrentProcessId()` takes no arguments and should always work
+         let pid = OsString::from(unsafe { GetCurrentProcessId() }.to_string());
+ 
+@@ -105,19 +102,10 @@ impl CrashHelperClient {
+             bail!("Could not create the crash helper process");
+         }
+ 
+-        // SAFETY: We've verified that this value had been properly populated
+-        // in the lines above.
+-        unsafe {
+-            CloseHandle(pi.hThread);
+-        }
+-
+-        // SAFETY: We've already checked that `pi.hProcess` contains a
+-        // valid process handle.
+-        Ok(unsafe { OwnedHandle::from_raw_handle(pi.hProcess as RawHandle) })
+-    }
+-
+-    pub(crate) fn prepare_for_minidump(_crash_helper_pid: Pid) {
+-        // On Windows this is currently a no-op
++        // SAFETY: We just successfully populated the `PROCESS_INFORMATION`
++        // structure and the `hProcess` field contains a valid handle.
++        unsafe { CloseHandle(pi.hProcess) };
++        Ok(())
+     }
+ }
+ 
+diff --git a/toolkit/crashreporter/crash_helper_common/src/breakpad.rs b/toolkit/crashreporter/crash_helper_common/src/breakpad.rs
+index 0280db37b1e2..17c96145dc1e 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/breakpad.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/breakpad.rs
+@@ -3,17 +3,17 @@
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+ #[cfg(target_os = "windows")]
+-pub use windows::{BreakpadChar, BreakpadData, BreakpadRawData, Pid};
++pub use windows::{AncillaryData, BreakpadChar, BreakpadData, BreakpadRawData, Pid};
+ #[cfg(target_os = "windows")]
+ pub(crate) mod windows;
+ 
+ #[cfg(any(target_os = "android", target_os = "linux"))]
+-pub use linux::{BreakpadChar, BreakpadData, BreakpadRawData, Pid};
++pub use linux::{AncillaryData, BreakpadChar, BreakpadData, BreakpadRawData, Pid};
+ #[cfg(any(target_os = "android", target_os = "linux"))]
+ pub(crate) mod linux;
+ 
+ #[cfg(target_os = "macos")]
+-pub use macos::{BreakpadChar, BreakpadData, BreakpadRawData, Pid};
++pub use macos::{AncillaryData, BreakpadChar, BreakpadData, BreakpadRawData, Pid};
+ #[cfg(target_os = "macos")]
+ pub(crate) mod macos;
+ 
+diff --git a/toolkit/crashreporter/crash_helper_common/src/breakpad/linux.rs b/toolkit/crashreporter/crash_helper_common/src/breakpad/linux.rs
+index f97dc44b8e7a..59ee57b36b13 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/breakpad/linux.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/breakpad/linux.rs
+@@ -11,6 +11,7 @@ use std::{ffi::c_char, fmt, os::fd::RawFd};
+ 
+ pub type Pid = pid_t;
+ pub type BreakpadChar = c_char;
++pub type AncillaryData = RawFd;
+ pub type BreakpadRawData = RawFd;
+ 
+ pub struct BreakpadData {
+diff --git a/toolkit/crashreporter/crash_helper_common/src/breakpad/macos.rs b/toolkit/crashreporter/crash_helper_common/src/breakpad/macos.rs
+index aa4ccd2f7e43..80ad74d00bb0 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/breakpad/macos.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/breakpad/macos.rs
+@@ -16,6 +16,7 @@ use crate::BreakpadString;
+ 
+ pub type Pid = pid_t;
+ pub type BreakpadChar = c_char;
++pub type AncillaryData = ();
+ pub type BreakpadRawData = *const c_char;
+ 
+ pub struct BreakpadData {
+diff --git a/toolkit/crashreporter/crash_helper_common/src/breakpad/windows.rs b/toolkit/crashreporter/crash_helper_common/src/breakpad/windows.rs
+index 4eca22cf6062..9d95939696ce 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/breakpad/windows.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/breakpad/windows.rs
+@@ -13,6 +13,7 @@ use crate::BreakpadString;
+ 
+ pub type Pid = u32;
+ pub type BreakpadChar = u16;
++pub type AncillaryData = ();
+ pub type BreakpadRawData = *const u16;
+ 
+ pub struct BreakpadData {
+diff --git a/toolkit/crashreporter/crash_helper_common/src/ipc_channel.rs b/toolkit/crashreporter/crash_helper_common/src/ipc_channel.rs
+index 4a8c50004839..946eeab7b289 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/ipc_channel.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/ipc_channel.rs
+@@ -7,7 +7,7 @@
+  *****************************************************************************/
+ 
+ #[cfg(target_os = "windows")]
+-pub use windows::{IPCChannel, IPCClientChannel};
++pub use windows::IPCChannel;
+ 
+ #[cfg(target_os = "windows")]
+ pub(crate) mod windows;
+@@ -17,7 +17,7 @@ pub(crate) mod windows;
+ *****************************************************************************/
+ 
+ #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+-pub use unix::{IPCChannel, IPCClientChannel};
++pub use unix::IPCChannel;
+ 
+ #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+ pub(crate) mod unix;
+diff --git a/toolkit/crashreporter/crash_helper_common/src/ipc_channel/unix.rs b/toolkit/crashreporter/crash_helper_common/src/ipc_channel/unix.rs
+index f7d0fc729af2..0859efaa6abf 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/ipc_channel/unix.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/ipc_channel/unix.rs
+@@ -43,30 +43,3 @@ impl IPCChannel {
+         (self.listener, self.server_endpoint, self.client_endpoint)
+     }
+ }
+-
+-pub struct IPCClientChannel {
+-    client_endpoint: IPCConnector,
+-    server_endpoint: IPCConnector,
+-}
+-
+-impl IPCClientChannel {
+-    /// Create a new IPC channel for use between one of the browser's child
+-    /// processes and the crash helper.
+-    pub fn new() -> Result<IPCClientChannel, IPCError> {
+-        let pair = unix_socketpair().map_err(IPCError::System)?;
+-        let client_endpoint = IPCConnector::from_fd(pair.0)?;
+-        let server_endpoint = IPCConnector::from_fd(pair.1)?;
+-
+-        Ok(IPCClientChannel {
+-            client_endpoint,
+-            server_endpoint,
+-        })
+-    }
+-
+-    /// Deconstruct the IPC channel, returning the listening endpoint,
+-    /// the connected server-side endpoint and the connected client-side
+-    /// endpoint.
+-    pub fn deconstruct(self) -> (IPCConnector, IPCConnector) {
+-        (self.server_endpoint, self.client_endpoint)
+-    }
+-}
+diff --git a/toolkit/crashreporter/crash_helper_common/src/ipc_channel/windows.rs b/toolkit/crashreporter/crash_helper_common/src/ipc_channel/windows.rs
+index 4cbf0232817e..33bd14a63e85 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/ipc_channel/windows.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/ipc_channel/windows.rs
+@@ -2,15 +2,9 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+-use std::{ffi::CString, hash::RandomState, process};
++use std::process;
+ 
+-use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+-
+-use crate::{
+-    errors::IPCError,
+-    platform::windows::{get_last_error, server_addr},
+-    IPCConnector, IPCListener, Pid,
+-};
++use crate::{errors::IPCError, IPCConnector, IPCListener, Pid};
+ 
+ pub struct IPCChannel {
+     listener: IPCListener,
+@@ -24,9 +18,9 @@ impl IPCChannel {
+     /// connected endpoints.
+     pub fn new() -> Result<IPCChannel, IPCError> {
+         let pid = process::id() as Pid;
+-        let mut listener = IPCListener::new(server_addr(pid))?;
++        let mut listener = IPCListener::new(pid)?;
+         listener.listen()?;
+-        let client_endpoint = IPCConnector::connect(listener.address())?;
++        let client_endpoint = IPCConnector::connect(pid)?;
+         let server_endpoint = listener.accept()?;
+ 
+         Ok(IPCChannel {
+@@ -43,56 +37,3 @@ impl IPCChannel {
+         (self.listener, self.server_endpoint, self.client_endpoint)
+     }
+ }
+-
+-pub struct IPCClientChannel {
+-    client_endpoint: IPCConnector,
+-    server_endpoint: IPCConnector,
+-}
+-
+-impl IPCClientChannel {
+-    /// Create a new IPC channel for use between one of the browser's child
+-    /// processes and the crash helper.
+-    pub fn new() -> Result<IPCClientChannel, IPCError> {
+-        let mut listener = Self::create_listener()?;
+-        listener.listen()?;
+-        let client_endpoint = IPCConnector::connect(listener.address())?;
+-        let server_endpoint = listener.accept()?;
+-
+-        Ok(IPCClientChannel {
+-            client_endpoint,
+-            server_endpoint,
+-        })
+-    }
+-
+-    fn create_listener() -> Result<IPCListener, IPCError> {
+-        const ATTEMPTS: u32 = 5;
+-
+-        // We pick the listener name at random, as unlikely as it may be there
+-        // could be clashes so try a few times before giving up.
+-        for _i in 0..ATTEMPTS {
+-            use std::hash::{BuildHasher, Hasher};
+-            let random_id = RandomState::new().build_hasher().finish();
+-
+-            let pipe_name = CString::new(format!(
+-                "\\\\.\\pipe\\gecko-crash-helper-child-pipe.{random_id:}"
+-            ))
+-            .unwrap();
+-            match IPCListener::new(pipe_name) {
+-                Ok(listener) => return Ok(listener),
+-                Err(_error @ IPCError::System(ERROR_ACCESS_DENIED)) => {} // Try again
+-                Err(error) => return Err(error),
+-            }
+-        }
+-
+-        // If we got to this point return whatever was the last error we
+-        // encountered along the way.
+-        Err(IPCError::System(get_last_error()))
+-    }
+-
+-    /// Deconstruct the IPC channel, returning the listening endpoint,
+-    /// the connected server-side endpoint and the connected client-side
+-    /// endpoint.
+-    pub fn deconstruct(self) -> (IPCConnector, IPCConnector) {
+-        (self.server_endpoint, self.client_endpoint)
+-    }
+-}
+diff --git a/toolkit/crashreporter/crash_helper_common/src/ipc_connector.rs b/toolkit/crashreporter/crash_helper_common/src/ipc_connector.rs
+index 042bcb053e21..be5e64323c2a 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/ipc_connector.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/ipc_connector.rs
+@@ -15,7 +15,7 @@ pub enum IPCEvent {
+  *****************************************************************************/
+ 
+ #[cfg(target_os = "windows")]
+-pub use windows::{AncillaryData, IPCConnector, INVALID_ANCILLARY_DATA};
++pub use windows::IPCConnector;
+ 
+ #[cfg(target_os = "windows")]
+ pub(crate) mod windows;
+@@ -25,7 +25,7 @@ pub(crate) mod windows;
+  *****************************************************************************/
+ 
+ #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+-pub use unix::{AncillaryData, IPCConnector, INVALID_ANCILLARY_DATA};
++pub use unix::IPCConnector;
+ 
+ #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+ pub(crate) mod unix;
+diff --git a/toolkit/crashreporter/crash_helper_common/src/ipc_connector/unix.rs b/toolkit/crashreporter/crash_helper_common/src/ipc_connector/unix.rs
+index b8ee60c6fc85..d8265a1387f9 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/ipc_connector/unix.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/ipc_connector/unix.rs
+@@ -4,24 +4,24 @@
+ 
+ #[cfg(any(target_os = "android", target_os = "linux"))]
+ use crate::platform::linux::{
+-    server_addr, set_socket_cloexec, set_socket_default_flags, unix_socket,
++    connected_process_pid, recv_nonblock, send_nonblock, server_addr, set_socket_cloexec,
++    set_socket_default_flags, unix_socket,
+ };
+ #[cfg(target_os = "macos")]
+ use crate::platform::macos::{
+-    server_addr, set_socket_cloexec, set_socket_default_flags, unix_socket,
++    connected_process_pid, recv_nonblock, send_nonblock, server_addr, set_socket_cloexec,
++    set_socket_default_flags, unix_socket,
+ };
+-use crate::{ignore_eintr, Pid, ProcessHandle, IO_TIMEOUT};
++use crate::{ignore_eintr, AncillaryData, Pid, IO_TIMEOUT};
+ 
+ use nix::{
+-    cmsg_space,
+     errno::Errno,
+     poll::{poll, PollFd, PollFlags, PollTimeout},
+-    sys::socket::{connect, recvmsg, sendmsg, ControlMessage, ControlMessageOwned, MsgFlags},
++    sys::socket::connect,
+ };
+ use std::{
+     ffi::{CStr, CString},
+-    io::{IoSlice, IoSliceMut},
+-    os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd},
++    os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},
+     str::FromStr,
+ };
+ 
+@@ -30,13 +30,9 @@ use crate::{
+     messages::{self, Message},
+ };
+ 
+-pub type AncillaryData = RawFd;
+-
+-// This must match `kInvalidHandle` in `mfbt/UniquePtrExt.h`
+-pub const INVALID_ANCILLARY_DATA: AncillaryData = -1;
+-
+ pub struct IPCConnector {
+     socket: OwnedFd,
++    pid: Pid,
+ }
+ 
+ impl IPCConnector {
+@@ -53,12 +49,9 @@ impl IPCConnector {
+     /// `FD_CLOEXEC` flag will not be set on the underlying socket and thus it
+     /// will be possible to inherit this connector in a child process.
+     pub fn from_fd_inheritable(socket: OwnedFd) -> Result<IPCConnector, IPCError> {
++        let pid = connected_process_pid(socket.as_fd()).map_err(IPCError::System)?;
+         set_socket_default_flags(socket.as_fd()).map_err(IPCError::System)?;
+-        Ok(IPCConnector { socket })
+-    }
+-
+-    pub fn from_ancillary(ancillary_data: AncillaryData) -> Result<IPCConnector, IPCError> {
+-        IPCConnector::from_fd(unsafe { OwnedFd::from_raw_fd(ancillary_data) })
++        Ok(IPCConnector { socket, pid })
+     }
+ 
+     /// Create a new connector by connecting it to the process specified by
+@@ -90,7 +83,9 @@ impl IPCConnector {
+             }
+         }
+ 
+-        Ok(IPCConnector { socket })
++        let pid = connected_process_pid(socket.as_fd()).map_err(IPCError::ConnectionFailure)?;
++
++        Ok(IPCConnector { socket, pid })
+     }
+ 
+     /// Serialize this connector into a string that can be passed on the
+@@ -106,20 +101,14 @@ impl IPCConnector {
+         let fd = RawFd::from_str(string).map_err(|_e| IPCError::ParseError)?;
+         // SAFETY: This is a file descriptor we passed in ourselves.
+         let socket = unsafe { OwnedFd::from_raw_fd(fd) };
+-        Ok(IPCConnector { socket })
++        let pid = connected_process_pid(socket.as_fd()).map_err(IPCError::System)?;
++        Ok(IPCConnector { socket, pid })
+     }
+ 
+     fn raw_fd(&self) -> RawFd {
+         self.socket.as_raw_fd()
+     }
+ 
+-    pub fn into_ancillary(
+-        self,
+-        _dst_process: &Option<ProcessHandle>,
+-    ) -> Result<AncillaryData, IPCError> {
+-        Ok(self.socket.into_raw_fd())
+-    }
+-
+     pub fn as_raw_ref(&self) -> BorrowedFd {
+         self.socket.as_fd()
+     }
+@@ -157,30 +146,7 @@ impl IPCConnector {
+     }
+ 
+     fn send_nonblock(&self, buff: &[u8], fd: Option<AncillaryData>) -> Result<(), Errno> {
+-        let iov = [IoSlice::new(buff)];
+-        let scm_fds: Vec<i32> = fd.map_or(vec![], |fd| vec![fd]);
+-        let scm = ControlMessage::ScmRights(&scm_fds);
+-
+-        let res = ignore_eintr!(sendmsg::<()>(
+-            self.raw_fd(),
+-            &iov,
+-            &[scm],
+-            MsgFlags::empty(),
+-            None
+-        ));
+-
+-        match res {
+-            Ok(bytes_sent) => {
+-                if bytes_sent == buff.len() {
+-                    Ok(())
+-                } else {
+-                    // TODO: This should never happen but we might want to put a
+-                    // better error message here.
+-                    Err(Errno::EMSGSIZE)
+-                }
+-            }
+-            Err(code) => Err(code),
+-        }
++        send_nonblock(self.raw_fd(), buff, fd)
+     }
+ 
+     fn send(&self, buff: &[u8], fd: Option<AncillaryData>) -> Result<(), Errno> {
+@@ -207,55 +173,7 @@ impl IPCConnector {
+         &self,
+         expected_size: usize,
+     ) -> Result<(Vec<u8>, Option<AncillaryData>), Errno> {
+-        let mut buff: Vec<u8> = vec![0; expected_size];
+-        let mut cmsg_buffer = cmsg_space!(RawFd);
+-        let mut iov = [IoSliceMut::new(&mut buff)];
+-
+-        let res = ignore_eintr!(recvmsg::<()>(
+-            self.raw_fd(),
+-            &mut iov,
+-            Some(&mut cmsg_buffer),
+-            MsgFlags::empty(),
+-        ));
+-
+-        // I know this looks weird, but bear with me. On macOS 10.15 every
+-        // other recvmsg() call returns ENOMEM for no apparent reason. But then
+-        // if works *fine* if you call it again with the same parameters. This
+-        // makes no sense but OK, I stopped trying to understand macOS a long
+-        // time ago. on macOS 15+ this isn't needed but since I can't test it
+-        // everywhere and it doesn't hurt anyway, every version gets the same
+-        // workaround.
+-        let res = match res {
+-            #[cfg(target_os = "macos")]
+-            Err(_code @ Errno::ENOMEM) => {
+-              ignore_eintr!(recvmsg::<()>(
+-                  self.raw_fd(),
+-                  &mut iov,
+-                  Some(&mut cmsg_buffer),
+-                  MsgFlags::empty(),
+-              ))?
+-            },
+-            Err(e) => return Err(e),
+-            Ok(val) => val,
+-        };
+-
+-        let fd = if let Some(cmsg) = res.cmsgs()?.next() {
+-            if let ControlMessageOwned::ScmRights(fds) = cmsg {
+-                fds.first().copied()
+-            } else {
+-                return Err(Errno::EBADMSG);
+-            }
+-        } else {
+-            None
+-        };
+-
+-        if res.bytes != expected_size {
+-            // TODO: This should only ever happen if the other side has gone rogue,
+-            // we need a better error message here.
+-            return Err(Errno::EBADMSG);
+-        }
+-
+-        Ok((buff, fd))
++        recv_nonblock(self.raw_fd(), expected_size)
+     }
+ 
+     pub fn recv(&self, expected_size: usize) -> Result<(Vec<u8>, Option<AncillaryData>), Errno> {
+@@ -270,4 +188,8 @@ impl IPCConnector {
+             _ => res,
+         }
+     }
++
++    pub fn endpoint_pid(&self) -> Pid {
++        self.pid
++    }
+ }
+diff --git a/toolkit/crashreporter/crash_helper_common/src/ipc_connector/windows.rs b/toolkit/crashreporter/crash_helper_common/src/ipc_connector/windows.rs
+index 8852b73a7e0d..b9c559be912f 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/ipc_connector/windows.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/ipc_connector/windows.rs
+@@ -5,21 +5,20 @@
+ use crate::{
+     errors::IPCError,
+     messages::{self, Message},
+-    platform::windows::{create_manual_reset_event, get_last_error, OverlappedOperation},
+-    ProcessHandle, IO_TIMEOUT,
++    platform::windows::{create_manual_reset_event, server_name, OverlappedOperation},
++    AncillaryData, Pid, IO_TIMEOUT,
+ };
+ 
+ use std::{
+     ffi::{c_void, CStr, OsString},
+-    os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle, RawHandle},
++    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle},
+     ptr::null_mut,
+     str::FromStr,
+     time::{Duration, Instant},
+ };
+ use windows_sys::Win32::{
+     Foundation::{
+-        DuplicateHandle, GetLastError, DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS,
+-        ERROR_FILE_NOT_FOUND, ERROR_INVALID_MESSAGE, ERROR_PIPE_BUSY, FALSE, HANDLE,
++        GetLastError, ERROR_FILE_NOT_FOUND, ERROR_INVALID_MESSAGE, ERROR_PIPE_BUSY, FALSE, HANDLE,
+         INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
+     },
+     Security::SECURITY_ATTRIBUTES,
+@@ -27,58 +26,37 @@ use windows_sys::Win32::{
+         CreateFileA, FILE_FLAG_OVERLAPPED, FILE_READ_DATA, FILE_SHARE_READ, FILE_SHARE_WRITE,
+         FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, OPEN_EXISTING,
+     },
+-    System::{
+-        Pipes::{SetNamedPipeHandleState, WaitNamedPipeA, PIPE_READMODE_MESSAGE},
+-        Threading::GetCurrentProcess,
++    System::Pipes::{
++        GetNamedPipeClientProcessId, SetNamedPipeHandleState, WaitNamedPipeA, PIPE_READMODE_MESSAGE,
+     },
+ };
+ 
+-pub type AncillaryData = HANDLE;
+-
+-// This must match `kInvalidHandle` in `mfbt/UniquePtrExt.h`
+-pub const INVALID_ANCILLARY_DATA: AncillaryData = 0;
+-
+-const HANDLE_SIZE: usize = size_of::<HANDLE>();
+-
+-// We encode handles at the beginning of every transmitted message. This
+-// function extracts the handle (if present) and returns it together with
+-// the rest of the buffer.
+-fn extract_buffer_and_handle(buffer: Vec<u8>) -> Result<(Vec<u8>, Option<HANDLE>), IPCError> {
+-    let handle_bytes = &buffer[0..HANDLE_SIZE];
+-    let data = &buffer[HANDLE_SIZE..];
+-    let handle_bytes: Result<[u8; HANDLE_SIZE], _> = handle_bytes.try_into();
+-    let Ok(handle_bytes) = handle_bytes else {
+-        return Err(IPCError::ParseError);
+-    };
+-    let handle = match HANDLE::from_ne_bytes(handle_bytes) {
+-        INVALID_ANCILLARY_DATA => None,
+-        handle => Some(handle),
+-    };
+-
+-    Ok((data.to_vec(), handle))
+-}
+-
+ pub struct IPCConnector {
+     handle: OwnedHandle,
+     event: OwnedHandle,
+     overlapped: Option<OverlappedOperation>,
++    pid: Pid,
+ }
+ 
+ impl IPCConnector {
+     pub fn new(handle: OwnedHandle) -> Result<IPCConnector, IPCError> {
+         let event = create_manual_reset_event()?;
++        let mut pid: Pid = 0;
++        // SAFETY: The `pid` pointer is taken from the stack and thus always valid.
++        let res =
++            unsafe { GetNamedPipeClientProcessId(handle.as_raw_handle() as HANDLE, &mut pid) };
++        if res == FALSE {
++            return Err(IPCError::System(unsafe { GetLastError() }));
++        }
+ 
+         Ok(IPCConnector {
+             handle,
+             event,
+             overlapped: None,
++            pid,
+         })
+     }
+ 
+-    pub fn from_ancillary(ancillary_data: AncillaryData) -> Result<IPCConnector, IPCError> {
+-        IPCConnector::new(unsafe { OwnedHandle::from_raw_handle(ancillary_data as RawHandle) })
+-    }
+-
+     pub fn as_raw(&self) -> HANDLE {
+         self.handle.as_raw_handle() as HANDLE
+     }
+@@ -87,7 +65,8 @@ impl IPCConnector {
+         self.event.as_raw_handle() as HANDLE
+     }
+ 
+-    pub fn connect(server_addr: &CStr) -> Result<IPCConnector, IPCError> {
++    pub fn connect(pid: Pid) -> Result<IPCConnector, IPCError> {
++        let server_name = server_name(pid);
+         let now = Instant::now();
+         let timeout = Duration::from_millis(IO_TIMEOUT.into());
+         let mut pipe;
+@@ -99,11 +78,11 @@ impl IPCConnector {
+                 bInheritHandle: FALSE,
+             };
+ 
+-            // SAFETY: The `server_addr` pointer is guaranteed to be valid,
+-            // all other pointer arguments are null.
++            // SAFETY: The `server_name` is guaranteed to be valid, all other
++            // pointer arguments are null.
+             pipe = unsafe {
+                 CreateFileA(
+-                    server_addr.as_ptr() as *const _,
++                    server_name.as_ptr(),
+                     FILE_READ_DATA | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES,
+                     FILE_SHARE_READ | FILE_SHARE_WRITE,
+                     &security_attributes,
+@@ -127,12 +106,9 @@ impl IPCConnector {
+ 
+             // The pipe might have not been created yet or it might be busy.
+             if (error == ERROR_FILE_NOT_FOUND) || (error == ERROR_PIPE_BUSY) {
+-                // SAFETY: The `server_addr` pointer is guaranteed to be valid.
++                // SAFETY: The `server_name` pointer is guaranteed to be valid.
+                 let res = unsafe {
+-                    WaitNamedPipeA(
+-                        server_addr.as_ptr() as *const _,
+-                        (timeout - elapsed).as_millis() as u32,
+-                    )
++                    WaitNamedPipeA(server_name.as_ptr(), (timeout - elapsed).as_millis() as u32)
+                 };
+                 let error = unsafe { GetLastError() };
+ 
+@@ -184,41 +160,16 @@ impl IPCConnector {
+         IPCConnector::new(handle)
+     }
+ 
+-    pub fn into_ancillary(
+-        self,
+-        dst_process: &Option<ProcessHandle>,
+-    ) -> Result<AncillaryData, IPCError> {
+-        let mut dst_handle: HANDLE = INVALID_ANCILLARY_DATA;
+-
+-        if let Some(dst_process) = dst_process.as_ref() {
+-            let res = unsafe {
+-                DuplicateHandle(
+-                    GetCurrentProcess(),
+-                    self.handle.into_raw_handle() as HANDLE,
+-                    dst_process.as_raw_handle() as HANDLE,
+-                    &mut dst_handle,
+-                    /* dwDesiredAccess */ 0,
+-                    /* bInheritHandle */ FALSE,
+-                    DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS,
+-                )
+-            };
+-
+-            if res > 0 {
+-                Ok(dst_handle)
+-            } else {
+-                Err(IPCError::System(get_last_error()))
+-            }
+-        } else {
+-            Ok(self.handle.into_raw_handle() as HANDLE)
+-        }
+-    }
+-
+     pub fn send_message(&self, message: &dyn Message) -> Result<(), IPCError> {
+         // Send the message header
+-        self.send(&message.header(), None)?;
++        self.send(&message.header())?;
+ 
+-        // Send the message payload
+-        self.send(&message.payload(), message.ancillary_payload())?;
++        // Send the message payload, ancillary payloads are not used on Windows.
++        debug_assert!(
++            message.ancillary_payload().is_none(),
++            "Windows doesn't transfer ancillary data"
++        );
++        self.send(&message.payload())?;
+ 
+         Ok(())
+     }
+@@ -253,7 +204,7 @@ impl IPCConnector {
+                 .try_clone()
+                 .map_err(IPCError::CloneHandleFailed)?,
+             self.event_raw_handle(),
+-            HANDLE_SIZE + messages::HEADER_SIZE,
++            messages::HEADER_SIZE,
+         )?);
+         Ok(())
+     }
+@@ -263,20 +214,18 @@ impl IPCConnector {
+         // waiting for one, so panic in that scenario.
+         let overlapped = self.overlapped.take().unwrap();
+         let buffer = overlapped.collect_recv(/* wait */ false)?;
+-        let (data, _) = extract_buffer_and_handle(buffer)?;
+-        messages::Header::decode(data.as_ref()).map_err(IPCError::BadMessage)
++        messages::Header::decode(buffer.as_ref()).map_err(IPCError::BadMessage)
+     }
+ 
+-    pub fn send(&self, buff: &[u8], handle: Option<AncillaryData>) -> Result<(), IPCError> {
+-        let mut buffer = Vec::<u8>::with_capacity(HANDLE_SIZE + buff.len());
+-        buffer.extend(handle.unwrap_or(INVALID_ANCILLARY_DATA).to_ne_bytes());
+-        buffer.extend(buff);
+-
+-        let overlapped =
+-            OverlappedOperation::sched_send(self.handle
++    pub fn send(&self, buff: &[u8]) -> Result<(), IPCError> {
++        let overlapped = OverlappedOperation::sched_send(
++            self.handle
+                 .try_clone()
+-                .map_err(IPCError::CloneHandleFailed)?, self.event_raw_handle(), buffer)?;
+-        overlapped.complete_send(/* wait */ true)
++                .map_err(IPCError::CloneHandleFailed)?,
++            self.event_raw_handle(),
++            buff.to_vec(),
++        )?;
++        overlapped.complete_send(/* wait */ false)
+     }
+ 
+     pub fn recv(&self, expected_size: usize) -> Result<(Vec<u8>, Option<AncillaryData>), IPCError> {
+@@ -285,14 +234,18 @@ impl IPCConnector {
+                 .try_clone()
+                 .map_err(IPCError::CloneHandleFailed)?,
+             self.event_raw_handle(),
+-            HANDLE_SIZE + expected_size,
++            expected_size,
+         )?;
+         let buffer = overlapped.collect_recv(/* wait */ true)?;
+-        extract_buffer_and_handle(buffer)
++        Ok((buffer, None))
++    }
++
++    pub fn endpoint_pid(&self) -> Pid {
++        self.pid
+     }
+ }
+ 
+-// SAFETY: The connector can be transferred across threads in spite of the raw
+-// pointer contained in the OVERLAPPED structure because it is only used
+-// internally and never visible externally.
++// SAFETY: The connector can be transferred across threads in spite of the
++// raw pointer contained in the OVERLAPPED structure because it is only
++// used internally and never visible externally.
+ unsafe impl Send for IPCConnector {}
+diff --git a/toolkit/crashreporter/crash_helper_common/src/ipc_listener/windows.rs b/toolkit/crashreporter/crash_helper_common/src/ipc_listener/windows.rs
+index eda8b8a33af8..867b304868a0 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/ipc_listener/windows.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/ipc_listener/windows.rs
+@@ -4,12 +4,12 @@
+ 
+ use crate::{
+     errors::IPCError,
+-    platform::windows::{create_manual_reset_event, server_addr, OverlappedOperation},
++    platform::windows::{create_manual_reset_event, server_name, OverlappedOperation},
+     IPCConnector, Pid,
+ };
+ 
+ use std::{
+-    ffi::{c_void, CStr, CString, OsString},
++    ffi::{c_void, CStr, OsString},
+     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle},
+     ptr::null_mut,
+     str::FromStr,
+@@ -27,19 +27,20 @@ use windows_sys::Win32::{
+ };
+ 
+ pub struct IPCListener {
+-    server_addr: CString,
++    server_name: String,
+     handle: OwnedHandle,
+     overlapped: Option<OverlappedOperation>,
+     event: OwnedHandle,
+ }
+ 
+ impl IPCListener {
+-    pub fn new(server_addr: CString) -> Result<IPCListener, IPCError> {
+-        let pipe = create_named_pipe(&server_addr, /* first_instance */ true)?;
++    pub fn new(pid: Pid) -> Result<IPCListener, IPCError> {
++        let server_name = server_name(pid);
++        let pipe = create_named_pipe(&server_name, /* first_instance */ true)?;
+         let event = create_manual_reset_event()?;
+ 
+         Ok(IPCListener {
+-            server_addr,
++            server_name,
+             handle: pipe,
+             overlapped: None,
+             event,
+@@ -50,10 +51,6 @@ impl IPCListener {
+         self.event.as_raw_handle() as HANDLE
+     }
+ 
+-    pub fn address(&self) -> &CStr {
+-        &self.server_addr
+-    }
+-
+     pub fn listen(&mut self) -> Result<(), IPCError> {
+         self.overlapped = Some(OverlappedOperation::listen(
+             self.handle
+@@ -69,7 +66,7 @@ impl IPCListener {
+         // already waiting, so panic in that scenario.
+         let overlapped = self.overlapped.take().unwrap();
+         overlapped.accept(self.handle.as_raw_handle() as HANDLE)?;
+-        let new_pipe = create_named_pipe(&self.server_addr, /* first_instance */ false)?;
++        let new_pipe = create_named_pipe(&self.server_name, /* first_instance */ false)?;
+         let connected_pipe = std::mem::replace(&mut self.handle, new_pipe);
+ 
+         // Once we've accepted a new connection and replaced the listener's
+@@ -91,7 +88,7 @@ impl IPCListener {
+     /// Deserialize a listener from an argument passed on the command-line.
+     /// The resulting listener is ready to accept new connections.
+     pub fn deserialize(string: &CStr, pid: Pid) -> Result<IPCListener, IPCError> {
+-        let server_addr = server_addr(pid);
++        let server_name = server_name(pid);
+         let string = string.to_str().map_err(|_e| IPCError::ParseError)?;
+         let handle = usize::from_str(string).map_err(|_e| IPCError::ParseError)?;
+         let handle = handle as *mut c_void;
+@@ -100,7 +97,7 @@ impl IPCListener {
+         let event = create_manual_reset_event()?;
+ 
+         let mut listener = IPCListener {
+-            server_addr,
++            server_name,
+             handle,
+             overlapped: None,
+             event,
+@@ -119,7 +116,7 @@ impl IPCListener {
+ // used internally and never visible externally.
+ unsafe impl Send for IPCListener {}
+ 
+-fn create_named_pipe(server_addr: &CStr, first_instance: bool) -> Result<OwnedHandle, IPCError> {
++fn create_named_pipe(server_name: &str, first_instance: bool) -> Result<OwnedHandle, IPCError> {
+     const PIPE_BUFFER_SIZE: u32 = 4096;
+ 
+     let open_mode = PIPE_ACCESS_DUPLEX
+@@ -140,7 +137,7 @@ fn create_named_pipe(server_addr: &CStr, first_instance: bool) -> Result<OwnedHa
+     // valid, and null for all the other pointer arguments.
+     let pipe = unsafe {
+         CreateNamedPipeA(
+-            server_addr.as_ptr() as *const _,
++            server_name.as_ptr(),
+             open_mode,
+             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+             PIPE_UNLIMITED_INSTANCES,
+diff --git a/toolkit/crashreporter/crash_helper_common/src/ipc_poller.rs b/toolkit/crashreporter/crash_helper_common/src/ipc_poller.rs
+new file mode 100644
+index 000000000000..2dd0f523e091
+--- /dev/null
++++ b/toolkit/crashreporter/crash_helper_common/src/ipc_poller.rs
+@@ -0,0 +1,23 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++/*****************************************************************************
++ * Windows                                                                   *
++ *****************************************************************************/
++
++#[cfg(target_os = "windows")]
++pub use windows::wait_for_events;
++
++#[cfg(target_os = "windows")]
++pub(crate) mod windows;
++
++/*****************************************************************************
++ * Android, macOS & Linux                                                    *
++ *****************************************************************************/
++
++#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
++pub use unix::wait_for_events;
++
++#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
++pub(crate) mod unix;
+diff --git a/toolkit/crashreporter/crash_helper_common/src/ipc_poller/unix.rs b/toolkit/crashreporter/crash_helper_common/src/ipc_poller/unix.rs
+new file mode 100644
+index 000000000000..b85fbee970b0
+--- /dev/null
++++ b/toolkit/crashreporter/crash_helper_common/src/ipc_poller/unix.rs
+@@ -0,0 +1,74 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use nix::{
++    errno::Errno,
++    poll::{poll, PollFd, PollFlags, PollTimeout},
++};
++
++use crate::{errors::IPCError, ignore_eintr, IPCConnector, IPCEvent, IPCListener};
++
++pub fn wait_for_events(
++    listener: &mut IPCListener,
++    connectors: &mut [IPCConnector],
++) -> Result<Vec<IPCEvent>, IPCError> {
++    let mut pollfds = Vec::with_capacity(1 + connectors.len());
++    pollfds.push(PollFd::new(listener.as_raw_ref(), PollFlags::POLLIN));
++    pollfds.extend(
++        connectors
++            .iter()
++            .map(|connector| PollFd::new(connector.as_raw_ref(), PollFlags::POLLIN)),
++    );
++
++    let mut events = Vec::<IPCEvent>::new();
++    let mut num_events =
++        ignore_eintr!(poll(&mut pollfds, PollTimeout::NONE)).map_err(IPCError::System)?;
++
++    for (index, pollfd) in pollfds.iter().enumerate() {
++        // revents() returns None only if the kernel sends back data
++        // that nix does not understand, we can safely assume this
++        // never happens in practice hence the unwrap().
++        let revents = pollfd.revents().unwrap();
++
++        if revents.contains(PollFlags::POLLIN) {
++            if index == 0 {
++                if let Ok(connector) = listener.accept() {
++                    events.push(IPCEvent::Connect(connector));
++                }
++            } else {
++                // SAFETY: The index is guaranteed to be >0 and within
++                // the bounds of the client_connectors array.
++                let connector = unsafe { connectors.get_unchecked(index - 1) };
++                let header = connector.recv_header();
++                if let Ok(header) = header {
++                    // Note that if we encounter a failure we don't propagate
++                    // it, when the socket gets disconnected we'll get a
++                    // POLLHUP event anyway so deal with disconnections there
++                    // instead of here.
++                    events.push(IPCEvent::Header(index - 1, header));
++                }
++            }
++        }
++
++        if revents.contains(PollFlags::POLLHUP) {
++            if index > 0 {
++                events.push(IPCEvent::Disconnect(index - 1));
++            } else {
++                // This should never happen, unless the listener socket was not
++                // set up properly or a failure happened during setup.
++                return Err(IPCError::System(Errno::EFAULT));
++            }
++        }
++
++        if !revents.is_empty() {
++            num_events -= 1;
++
++            if num_events == 0 {
++                break;
++            }
++        }
++    }
++
++    Ok(events)
++}
+diff --git a/toolkit/crashreporter/crash_helper_common/src/ipc_poller/windows.rs b/toolkit/crashreporter/crash_helper_common/src/ipc_poller/windows.rs
+new file mode 100644
+index 000000000000..50999a48ad4d
+--- /dev/null
++++ b/toolkit/crashreporter/crash_helper_common/src/ipc_poller/windows.rs
+@@ -0,0 +1,85 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use windows_sys::Win32::{
++    Foundation::{ERROR_BROKEN_PIPE, ERROR_INVALID_PARAMETER, FALSE, HANDLE, WAIT_OBJECT_0},
++    System::{
++        SystemServices::MAXIMUM_WAIT_OBJECTS,
++        Threading::{WaitForMultipleObjects, INFINITE},
++    },
++};
++
++use crate::{errors::IPCError, IPCConnector, IPCEvent, IPCListener};
++
++pub fn wait_for_events(
++    listener: &mut IPCListener,
++    connectors: &mut [IPCConnector],
++) -> Result<Vec<IPCEvent>, IPCError> {
++    for connector in connectors.iter_mut() {
++        // TODO: We might get a broken pipe error here which would cause us to
++        // fail instead of just dropping the disconnected connector.
++        connector.sched_recv_header()?;
++    }
++
++    let native_events = collect_events(listener, connectors);
++
++    if native_events.len() > MAXIMUM_WAIT_OBJECTS as usize {
++        return Err(IPCError::WaitingFailure(Some(ERROR_INVALID_PARAMETER)));
++    }
++
++    // SAFETY: This is less than MAXIMUM_WAIT_OBJECTS
++    let native_events_len: u32 = unsafe { native_events.len().try_into().unwrap_unchecked() };
++
++    let res = unsafe {
++        WaitForMultipleObjects(
++            native_events_len,
++            native_events.as_ptr(),
++            FALSE, // bWaitAll
++            INFINITE,
++        )
++    };
++
++    if res >= (WAIT_OBJECT_0 + native_events_len) {
++        return Err(IPCError::WaitingFailure(None));
++    }
++
++    let index = (res - WAIT_OBJECT_0) as usize;
++
++    let mut events = Vec::<IPCEvent>::new();
++    if index == 0 {
++        if let Ok(connector) = listener.accept() {
++            events.push(IPCEvent::Connect(connector));
++        }
++    } else {
++        let index = index - 1;
++        // SAFETY: The index is guaranteed to be within the bounds of the client_connectors array.
++        let connector = unsafe { connectors.get_unchecked_mut(index) };
++        let header = connector.collect_header();
++
++        match header {
++            Ok(header) => {
++                events.push(IPCEvent::Header(index, header));
++            }
++            Err(error) => match error {
++                IPCError::System(_code @ ERROR_BROKEN_PIPE) => {
++                    events.push(IPCEvent::Disconnect(index));
++                }
++                _ => return Err(error),
++            },
++        }
++    }
++
++    Ok(events)
++}
++
++fn collect_events(listener: &IPCListener, connectors: &[IPCConnector]) -> Vec<HANDLE> {
++    let mut events = Vec::with_capacity(1 + connectors.len());
++
++    events.push(listener.event_raw_handle());
++    for connector in connectors {
++        events.push(connector.event_raw_handle());
++    }
++
++    events
++}
+diff --git a/toolkit/crashreporter/crash_helper_common/src/lib.rs b/toolkit/crashreporter/crash_helper_common/src/lib.rs
+index 5fe5a4a7bd1f..98824bfa4acd 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/lib.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/lib.rs
+@@ -11,16 +11,17 @@ mod breakpad;
+ mod ipc_channel;
+ mod ipc_connector;
+ mod ipc_listener;
++mod ipc_poller;
+ mod platform;
+ 
+ use errors::MessageError;
+ 
+ // Re-export the platform-specific types and functions
+-pub use crate::breakpad::{BreakpadChar, BreakpadData, BreakpadRawData, Pid};
+-pub use crate::ipc_channel::{IPCChannel, IPCClientChannel};
+-pub use crate::ipc_connector::{AncillaryData, IPCConnector, IPCEvent, INVALID_ANCILLARY_DATA};
++pub use crate::breakpad::{AncillaryData, BreakpadChar, BreakpadData, BreakpadRawData, Pid};
++pub use crate::ipc_channel::IPCChannel;
++pub use crate::ipc_connector::{IPCConnector, IPCEvent};
+ pub use crate::ipc_listener::IPCListener;
+-pub use crate::platform::{server_addr, ProcessHandle};
++pub use crate::ipc_poller::wait_for_events;
+ 
+ /// OsString extensions to convert from/to C strings. The strings will be
+ /// regular nul-terminated byte strings on most platforms but will use wide
+diff --git a/toolkit/crashreporter/crash_helper_common/src/messages.rs b/toolkit/crashreporter/crash_helper_common/src/messages.rs
+index e7306c292977..935a251b546c 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/messages.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/messages.rs
+@@ -13,7 +13,11 @@ use std::{
+ #[cfg(target_os = "windows")]
+ use windows_sys::Win32::System::Diagnostics::Debug::{CONTEXT, EXCEPTION_RECORD};
+ 
+-use crate::{breakpad::Pid, errors::MessageError, ipc_connector::AncillaryData, BreakpadString};
++use crate::{
++    breakpad::{AncillaryData, Pid},
++    errors::MessageError,
++    BreakpadString,
++};
+ 
+ #[repr(u8)]
+ #[derive(Copy, Clone, Debug, FromPrimitive, ToPrimitive, PartialEq)]
+@@ -42,14 +46,6 @@ pub enum Kind {
+     RegisterAuxvInfo = 8,
+     #[cfg(any(target_os = "android", target_os = "linux"))]
+     UnregisterAuxvInfo = 9,
+-    /// Register a new child process and carry over the IPC channel it will use
+-    /// to talk to the crash helper. This is sent from the main process to the
+-    /// crash helper.
+-    RegisterChildProcess = 10,
+-    /// Reply sent by the crash helper to a newly registered child process.
+-    /// Note that this won't be sent back to the main process, it's sent from
+-    /// the crash helper to the newly launched child process.
+-    ChildProcessRegistered = 11,
+ }
+ 
+ pub trait Message {
+@@ -624,108 +620,3 @@ impl Message for UnregisterAuxvInfo {
+         Ok(UnregisterAuxvInfo { pid })
+     }
+ }
+-
+-/* Message sent from the main process to the crash helper to register a new
+- * child process which is about to be spawned. This message contains the IPC
+- * endpoint which the crash helper will use to talk to the child. */
+-
+-pub struct RegisterChildProcess {
+-    pub ipc_endpoint: AncillaryData,
+-}
+-
+-impl RegisterChildProcess {
+-    pub fn new(ipc_endpoint: AncillaryData) -> RegisterChildProcess {
+-        RegisterChildProcess { ipc_endpoint }
+-    }
+-
+-    fn payload_size(&self) -> usize {
+-        0
+-    }
+-}
+-
+-impl Message for RegisterChildProcess {
+-    fn kind() -> Kind {
+-        Kind::RegisterChildProcess
+-    }
+-
+-    fn header(&self) -> Vec<u8> {
+-        Header {
+-            kind: Self::kind(),
+-            size: self.payload_size(),
+-        }
+-        .encode()
+-    }
+-
+-    fn payload(&self) -> Vec<u8> {
+-        Vec::<u8>::new()
+-    }
+-
+-    fn ancillary_payload(&self) -> Option<AncillaryData> {
+-        Some(self.ipc_endpoint)
+-    }
+-
+-    fn decode(
+-        _data: &[u8],
+-        ancillary_data: Option<AncillaryData>,
+-    ) -> Result<RegisterChildProcess, MessageError> {
+-        let Some(ipc_endpoint) = ancillary_data else {
+-            return Err(MessageError::MissingAncillary);
+-        };
+-
+-        Ok(RegisterChildProcess { ipc_endpoint })
+-    }
+-}
+-
+-/* Reply sent from the crash helper process to a newly registered child. It
+- * contains platform-dependent information which is required for the child
+- * process to prepare itself for crash generation. */
+-
+-pub struct ChildProcessRegistered {
+-    pub crash_helper_pid: Pid,
+-}
+-
+-impl ChildProcessRegistered {
+-    pub fn new(pid: Pid) -> ChildProcessRegistered {
+-        ChildProcessRegistered {
+-            crash_helper_pid: pid,
+-        }
+-    }
+-}
+-
+-impl Message for ChildProcessRegistered {
+-    fn kind() -> Kind {
+-        Kind::ChildProcessRegistered
+-    }
+-
+-    fn header(&self) -> Vec<u8> {
+-        Header {
+-            kind: Self::kind(),
+-            size: size_of::<Pid>(),
+-        }
+-        .encode()
+-    }
+-
+-    fn payload(&self) -> Vec<u8> {
+-        self.crash_helper_pid.to_ne_bytes().to_vec()
+-    }
+-
+-    fn ancillary_payload(&self) -> Option<AncillaryData> {
+-        None
+-    }
+-
+-    fn decode(
+-        data: &[u8],
+-        ancillary_data: Option<AncillaryData>,
+-    ) -> Result<ChildProcessRegistered, MessageError> {
+-        debug_assert!(
+-            ancillary_data.is_none(),
+-            "ChildProcessRegistered messages cannot carry ancillary data"
+-        );
+-        let bytes: [u8; size_of::<Pid>()] = data[0..size_of::<Pid>()].try_into()?;
+-        let pid = Pid::from_ne_bytes(bytes);
+-
+-        Ok(ChildProcessRegistered {
+-            crash_helper_pid: pid,
+-        })
+-    }
+-}
+diff --git a/toolkit/crashreporter/crash_helper_common/src/platform.rs b/toolkit/crashreporter/crash_helper_common/src/platform.rs
+index 27ad3dbf5261..d80d48564cb9 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/platform.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/platform.rs
+@@ -2,21 +2,12 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+-#[cfg(target_os = "windows")]
+-pub use windows::{server_addr, ProcessHandle};
+-
+ #[cfg(target_os = "windows")]
+ pub(crate) mod windows;
+ 
+-#[cfg(any(target_os = "android", target_os = "linux"))]
+-pub use linux::{server_addr, ProcessHandle};
+-
+ #[cfg(any(target_os = "android", target_os = "linux"))]
+ pub(crate) mod linux;
+ 
+-#[cfg(target_os = "macos")]
+-pub use macos::{server_addr, ProcessHandle};
+-
+ #[cfg(target_os = "macos")]
+ pub(crate) mod macos;
+ 
+diff --git a/toolkit/crashreporter/crash_helper_common/src/platform/linux.rs b/toolkit/crashreporter/crash_helper_common/src/platform/linux.rs
+index 3ecedd013369..5eea91472af5 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/platform/linux.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/platform/linux.rs
+@@ -2,24 +2,28 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+-use crate::Pid;
++use crate::{ignore_eintr, AncillaryData, Pid};
+ 
+ use nix::{
++    cmsg_space,
++    errno::Errno,
+     fcntl::{
+         fcntl,
+         FcntlArg::{F_GETFL, F_SETFD, F_SETFL},
+         FdFlag, OFlag,
+     },
+-    sys::socket::{socket, socketpair, AddressFamily, SockFlag, SockType, UnixAddr},
++    sys::socket::{
++        getsockopt, recvmsg, sendmsg, socket, socketpair, sockopt::PeerCredentials, AddressFamily,
++        ControlMessage, ControlMessageOwned, MsgFlags, SockFlag, SockType, UnixAddr,
++    },
+     Result,
+ };
+ use std::{
+     env,
+-    os::fd::{AsRawFd, BorrowedFd, OwnedFd},
++    io::{IoSlice, IoSliceMut},
++    os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd},
+ };
+ 
+-pub type ProcessHandle = ();
+-
+ pub(crate) fn unix_socket() -> Result<OwnedFd> {
+     socket(
+         AddressFamily::Unix,
+@@ -49,7 +53,7 @@ pub(crate) fn set_socket_cloexec(socket: BorrowedFd) -> Result<()> {
+     fcntl(socket.as_raw_fd(), F_SETFD(FdFlag::FD_CLOEXEC)).map(|_res| ())
+ }
+ 
+-pub fn server_addr(pid: Pid) -> Result<UnixAddr> {
++pub(crate) fn server_addr(pid: Pid) -> Result<UnixAddr> {
+     let server_name = if let Ok(snap_instance_name) = env::var("SNAP_INSTANCE_NAME") {
+         format!("snap.{snap_instance_name:}.gecko-crash-helper-pipe.{pid:}")
+     } else {
+@@ -57,3 +61,65 @@ pub fn server_addr(pid: Pid) -> Result<UnixAddr> {
+     };
+     UnixAddr::new_abstract(server_name.as_bytes())
+ }
++
++// Return the pid of the process connected to this socket.
++pub(crate) fn connected_process_pid(socket: BorrowedFd) -> Result<Pid> {
++    let pid = getsockopt(&socket, PeerCredentials)?.pid();
++
++    Ok(pid)
++}
++
++pub(crate) fn send_nonblock(socket: RawFd, buff: &[u8], fd: Option<AncillaryData>) -> Result<()> {
++    let iov = [IoSlice::new(buff)];
++    let scm_fds: Vec<i32> = fd.map_or(vec![], |fd| vec![fd]);
++    let scm = ControlMessage::ScmRights(&scm_fds);
++
++    let res = ignore_eintr!(sendmsg::<()>(socket, &iov, &[scm], MsgFlags::empty(), None));
++
++    match res {
++        Ok(bytes_sent) => {
++            if bytes_sent == buff.len() {
++                Ok(())
++            } else {
++                // TODO: This should never happen but we might want to put a
++                // better error message here.
++                Err(Errno::EMSGSIZE)
++            }
++        }
++        Err(code) => Err(code),
++    }
++}
++
++pub(crate) fn recv_nonblock(
++    socket: RawFd,
++    expected_size: usize,
++) -> Result<(Vec<u8>, Option<AncillaryData>)> {
++    let mut buff: Vec<u8> = vec![0; expected_size];
++    let mut cmsg_buffer = cmsg_space!(RawFd);
++    let mut iov = [IoSliceMut::new(&mut buff)];
++
++    let res = ignore_eintr!(recvmsg::<()>(
++        socket,
++        &mut iov,
++        Some(&mut cmsg_buffer),
++        MsgFlags::empty(),
++    ))?;
++
++    let fd = if let Some(cmsg) = res.cmsgs()?.next() {
++        if let ControlMessageOwned::ScmRights(fds) = cmsg {
++            fds.first().copied()
++        } else {
++            return Err(Errno::EBADMSG);
++        }
++    } else {
++        None
++    };
++
++    if res.bytes != expected_size {
++        // TODO: This should only ever happen if the other side has gone rogue,
++        // we need a better error message here.
++        return Err(Errno::EBADMSG);
++    }
++
++    Ok((buff, fd))
++}
+diff --git a/toolkit/crashreporter/crash_helper_common/src/platform/macos.rs b/toolkit/crashreporter/crash_helper_common/src/platform/macos.rs
+index 84430c785273..97a1bb8c13b1 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/platform/macos.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/platform/macos.rs
+@@ -2,7 +2,7 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+-use crate::Pid;
++use crate::{ignore_eintr, AncillaryData, Pid};
+ 
+ use nix::{
+     errno::Errno,
+@@ -12,18 +12,19 @@ use nix::{
+         FdFlag, OFlag,
+     },
+     libc::{setsockopt, SOL_SOCKET, SO_NOSIGPIPE},
+-    sys::socket::{socket, socketpair, AddressFamily, SockFlag, SockType, UnixAddr},
++    sys::socket::{
++        getsockopt, recv, send, socket, socketpair, sockopt::LocalPeerPid, AddressFamily, MsgFlags,
++        SockFlag, SockType, UnixAddr,
++    },
+     Result,
+ };
+ use std::{
+     mem::size_of,
+-    os::fd::{AsRawFd, BorrowedFd, OwnedFd},
++    os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd},
+     path::PathBuf,
+     str::FromStr,
+ };
+ 
+-pub type ProcessHandle = ();
+-
+ pub(crate) fn unix_socket() -> Result<OwnedFd> {
+     socket(
+         AddressFamily::Unix,
+@@ -72,10 +73,75 @@ pub(crate) fn set_socket_cloexec(socket: BorrowedFd) -> Result<()> {
+     fcntl(socket.as_raw_fd(), F_SETFD(FdFlag::FD_CLOEXEC)).map(|_res| ())
+ }
+ 
+-pub fn server_addr(pid: Pid) -> Result<UnixAddr> {
++pub(crate) fn server_addr(pid: Pid) -> Result<UnixAddr> {
+     // macOS doesn't seem to support abstract paths as addresses for Unix
+     // protocol sockets, so this needs to be the path of an actual file.
+     let server_name = format!("/tmp/gecko-crash-helper-pipe.{pid:}");
+     let server_path = PathBuf::from_str(&server_name).unwrap();
+     UnixAddr::new(&server_path)
+ }
++
++// Return the pid of the process connected to this socket.
++pub(crate) fn connected_process_pid(socket: BorrowedFd) -> Result<Pid> {
++    let pid = getsockopt(&socket, LocalPeerPid)?;
++
++    Ok(pid)
++}
++
++// We're using plain recv()/send() calls here and we're calling them in a loop
++// until all the data expected to be in a message gets retrieved or sent. Note
++// however we'll fail whenever we hit an EAGAIN condition. That's because IPC
++// calls are essentially symmetric, so if we're hitting EAGAIN it means one of
++// the sides isn't responding so better to fail right away.
++
++pub(crate) fn send_nonblock(socket: RawFd, buff: &[u8], fd: Option<AncillaryData>) -> Result<()> {
++    // We don't send file descriptors on macOS
++    if fd.is_some() {
++        return Err(Errno::EINVAL);
++    }
++
++    let mut bytes_sent = 0;
++
++    while bytes_sent != buff.len() {
++        let res = ignore_eintr!(send(socket, &buff[bytes_sent..], MsgFlags::empty()));
++
++        match res {
++            Ok(size) => {
++                bytes_sent += size;
++            }
++            Err(error) => {
++                return Err(error);
++            }
++        }
++    }
++
++    Ok(())
++}
++
++pub(crate) fn recv_nonblock(
++    socket: RawFd,
++    expected_size: usize,
++) -> Result<(Vec<u8>, Option<AncillaryData>)> {
++    let mut buff: Vec<u8> = vec![0; expected_size];
++    let mut bytes_received = 0;
++
++    while bytes_received != expected_size {
++        let res = ignore_eintr!(recv(socket, &mut buff[bytes_received..], MsgFlags::empty()));
++
++        match res {
++            Ok(size) => {
++                bytes_received += size;
++
++                if size == 0 {
++                    // This means the other end was disconnected
++                    return Err(Errno::EBADMSG);
++                }
++            }
++            Err(error) => {
++                return Err(error);
++            }
++        }
++    }
++
++    Ok((buff, None))
++}
+diff --git a/toolkit/crashreporter/crash_helper_common/src/platform/windows.rs b/toolkit/crashreporter/crash_helper_common/src/platform/windows.rs
+index 933bdebffbed..4aea942119a2 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/platform/windows.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/platform/windows.rs
+@@ -7,7 +7,6 @@ use crate::{
+     Pid, IO_TIMEOUT,
+ };
+ use std::{
+-    ffi::CString,
+     mem::zeroed,
+     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle},
+     ptr::{null, null_mut},
+@@ -25,16 +24,14 @@ use windows_sys::Win32::{
+     },
+ };
+ 
+-pub type ProcessHandle = OwnedHandle;
+-
+ pub(crate) fn get_last_error() -> WIN32_ERROR {
+     // SAFETY: This is always safe to call
+     unsafe { GetLastError() }
+ }
+ 
+-pub fn server_addr(pid: Pid) -> CString {
++pub(crate) fn server_name(pid: Pid) -> String {
+     // We'll be passing this to CreateNamedPipeA() so we nul-terminate it.
+-    CString::new(format!("\\\\.\\pipe\\gecko-crash-helper-pipe.{pid:}")).unwrap()
++    format!("\\\\.\\pipe\\gecko-crash-helper-pipe.{pid:}\0")
+ }
+ 
+ pub(crate) fn create_manual_reset_event() -> Result<OwnedHandle, IPCError> {
+diff --git a/toolkit/crashreporter/crash_helper_server/src/crash_generation.rs b/toolkit/crashreporter/crash_helper_server/src/crash_generation.rs
+index 5e938fb06d52..6a3d7770fa54 100644
+--- a/toolkit/crashreporter/crash_helper_server/src/crash_generation.rs
++++ b/toolkit/crashreporter/crash_helper_server/src/crash_generation.rs
+@@ -15,7 +15,7 @@ use crash_annotations::{
+ };
+ use crash_helper_common::{
+     messages::{self, Message},
+-    AncillaryData, BreakpadChar, BreakpadData, BreakpadString, IPCConnector, Pid,
++    AncillaryData, BreakpadChar, BreakpadData, BreakpadString, Pid,
+ };
+ #[cfg(any(target_os = "android", target_os = "linux"))]
+ use minidump_writer::minidump_writer::DirectAuxvDumpInfo;
+@@ -30,7 +30,6 @@ use std::{
+     io::{Seek, SeekFrom, Write},
+     mem::size_of,
+     path::{Path, PathBuf},
+-    process,
+     sync::Mutex,
+ };
+ #[cfg(target_os = "windows")]
+@@ -76,20 +75,16 @@ enum MinidumpOrigin {
+     WindowsErrorReporting,
+ }
+ 
+-pub(crate) enum MessageResult {
+-    None,
+-    Reply(Box<dyn Message>),
+-    Connection(IPCConnector),
+-}
+-
+ pub(crate) struct CrashGenerator {
+     // This will be used for generating hangs
+     _minidump_path: OsString,
+     breakpad_server: BreakpadCrashGenerator,
++    client_pid: Pid,
+ }
+ 
+ impl CrashGenerator {
+     pub(crate) fn new(
++        client_pid: Pid,
+         breakpad_data: BreakpadData,
+         minidump_path: OsString,
+     ) -> Result<CrashGenerator> {
+@@ -104,92 +99,79 @@ impl CrashGenerator {
+         Ok(CrashGenerator {
+             _minidump_path: minidump_path,
+             breakpad_server,
++            client_pid,
+         })
+     }
+ 
+-    // Process a message received from the parent process. Return an optional
+-    // reply that will be sent back to the parent.
+-    pub(crate) fn parent_message(
++    // Process a message received from the client. Return an optional reply
++    // that will be sent back to the client.
++    pub(crate) fn client_message(
+         &mut self,
+         kind: messages::Kind,
+         data: &[u8],
+         ancillary_data: Option<AncillaryData>,
+-    ) -> Result<MessageResult> {
++        pid: Pid,
++    ) -> Result<Option<Box<dyn Message>>> {
+         match kind {
+             messages::Kind::SetCrashReportPath => {
++                if pid != self.client_pid {
++                    panic!("Not connected or attempting to set the path from the wrong process");
++                }
++
+                 let message = messages::SetCrashReportPath::decode(data, ancillary_data)?;
+                 self.set_path(message.path);
+-                Ok(MessageResult::None)
++                Ok(None)
+             }
+             messages::Kind::TransferMinidump => {
++                if pid != self.client_pid {
++                    panic!(
++                        "Not connected or attempting to request a minidump from a child process"
++                    );
++                }
++
+                 let message = messages::TransferMinidump::decode(data, ancillary_data)?;
+-                Ok(MessageResult::Reply(Box::new(
+-                    self.transfer_minidump(message.pid),
+-                )))
++                Ok(Some(Box::new(self.transfer_minidump(message.pid))))
+             }
+             messages::Kind::GenerateMinidump => {
+                 todo!("Implement all messages");
+             }
++            #[cfg(target_os = "windows")]
++            messages::Kind::WindowsErrorReporting => {
++                let message =
++                    messages::WindowsErrorReportingMinidump::decode(data, ancillary_data)?;
++                let _ = self.generate_wer_minidump(message);
++                Ok(Some(Box::new(
++                    messages::WindowsErrorReportingMinidumpReply::new(),
++                )))
++            }
+             #[cfg(any(target_os = "android", target_os = "linux"))]
+             messages::Kind::RegisterAuxvInfo => {
++                if pid != self.client_pid {
++                    panic!(
++                        "Attempting to register some auxiliary information from the wrong process"
++                    );
++                }
++
+                 let message = messages::RegisterAuxvInfo::decode(data, ancillary_data)?;
+                 let map = &mut AUXV_INFO_MAP.lock().unwrap();
+                 map.insert(message.pid, message.auxv_info);
+ 
+-                Ok(MessageResult::None)
++                Ok(None)
+             }
+             #[cfg(any(target_os = "android", target_os = "linux"))]
+             messages::Kind::UnregisterAuxvInfo => {
++                if pid != self.client_pid {
++                    panic!("Attempting to unregister auxiliary information from the wrong process");
++                }
++
+                 let message = messages::UnregisterAuxvInfo::decode(data, ancillary_data)?;
+                 let map = &mut AUXV_INFO_MAP.lock().unwrap();
+                 map.remove(&message.pid);
+ 
+-                Ok(MessageResult::None)
+-            }
+-            messages::Kind::RegisterChildProcess => {
+-                let message = messages::RegisterChildProcess::decode(data, ancillary_data)?;
+-                let connector = IPCConnector::from_ancillary(message.ipc_endpoint)?;
+-                connector
+-                    .send_message(&messages::ChildProcessRegistered::new(process::id() as Pid))?;
+-                Ok(MessageResult::Connection(connector))
+-            }
+-            kind => {
+-                bail!("Unexpected message {kind:?} from parent process");
+-            }
+-        }
+-    }
+-
+-    // Process a message received from a child process. Return an optional
+-    // reply that will be sent back to the child.
+-    pub(crate) fn child_message(
+-        &mut self,
+-        kind: messages::Kind,
+-        _data: &[u8],
+-        _ancillary_data: Option<AncillaryData>,
+-    ) -> Result<MessageResult> {
+-        bail!("Unexpected message {kind:?} from child process");
+-    }
+-
+-    // Process a message received from an external process. Return an optional
+-    // reply that will be sent back.
+-    pub(crate) fn external_message(
+-        &mut self,
+-        kind: messages::Kind,
+-        #[allow(unused_variables)] data: &[u8],
+-        #[allow(unused_variables)] ancillary_data: Option<AncillaryData>,
+-    ) -> Result<MessageResult> {
+-        match kind {
+-            #[cfg(target_os = "windows")]
+-            messages::Kind::WindowsErrorReporting => {
+-                let message =
+-                    messages::WindowsErrorReportingMinidump::decode(data, ancillary_data)?;
+-                let _ = self.generate_wer_minidump(message);
+-                Ok(MessageResult::Reply(Box::new(
+-                    messages::WindowsErrorReportingMinidumpReply::new(),
+-                )))
++                Ok(None)
+             }
+             kind => {
+-                bail!("Unexpected message {kind:?} from external process");
++                bail!("Unexpected message {:?}", kind);
+             }
+         }
+     }
+diff --git a/toolkit/crashreporter/crash_helper_server/src/ipc_server.rs b/toolkit/crashreporter/crash_helper_server/src/ipc_server.rs
+index 701191c25a45..9e28da5b8cbe 100644
+--- a/toolkit/crashreporter/crash_helper_server/src/ipc_server.rs
++++ b/toolkit/crashreporter/crash_helper_server/src/ipc_server.rs
+@@ -3,14 +3,11 @@
+  * You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ use anyhow::Result;
+-use crash_helper_common::{errors::IPCError, messages, IPCConnector, IPCEvent, IPCListener};
++use crash_helper_common::{
++    errors::IPCError, messages, wait_for_events, IPCConnector, IPCEvent, IPCListener, Pid,
++};
+ 
+-use crate::crash_generation::{CrashGenerator, MessageResult};
+-
+-#[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+-mod unix;
+-#[cfg(target_os = "windows")]
+-mod windows;
++use crate::crash_generation::CrashGenerator;
+ 
+ #[derive(PartialEq)]
+ pub enum IPCServerState {
+@@ -18,32 +15,22 @@ pub enum IPCServerState {
+     ClientDisconnected,
+ }
+ 
+-#[derive(PartialEq)]
+-enum IPCEndpoint {
+-    Parent, // A connection to the parent process
+-    #[allow(dead_code)]
+-    Child, // A connection to the child process
+-    External, // A connection to an external process
+-}
+-
+-struct IPCConnection {
+-    connector: IPCConnector,
+-    endpoint: IPCEndpoint,
+-}
+-
+ pub(crate) struct IPCServer {
+     listener: IPCListener,
+-    connections: Vec<IPCConnection>,
++    connectors: Vec<IPCConnector>,
++    client_pid: Pid,
+ }
+ 
+ impl IPCServer {
+-    pub(crate) fn new(listener: IPCListener, connector: IPCConnector) -> IPCServer {
++    pub(crate) fn new(
++        client_pid: Pid,
++        listener: IPCListener,
++        connector: IPCConnector,
++    ) -> IPCServer {
+         IPCServer {
+             listener,
+-            connections: vec![IPCConnection {
+-                connector,
+-                endpoint: IPCEndpoint::Parent,
+-            }],
++            connectors: vec![connector],
++            client_pid,
+         }
+     }
+ 
+@@ -51,7 +38,7 @@ impl IPCServer {
+         &mut self,
+         generator: &mut CrashGenerator,
+     ) -> Result<IPCServerState, IPCError> {
+-        let events = self.wait_for_events()?;
++        let events = wait_for_events(&mut self.listener, &mut self.connectors)?;
+ 
+         // We reverse the order of events, so that we start processing them
+         // from the highest indexes toward the lowest. If we did the opposite
+@@ -59,13 +46,14 @@ impl IPCServer {
+         for event in events.into_iter().rev() {
+             match event {
+                 IPCEvent::Connect(connector) => {
+-                    self.connections.push(IPCConnection {
+-                        connector,
+-                        endpoint: IPCEndpoint::External,
+-                    });
++                    self.connectors.push(connector);
+                 }
+                 IPCEvent::Header(index, header) => {
+-                    let res = self.handle_message(index, &header, generator);
++                    let connector = self
++                        .connectors
++                        .get_mut(index)
++                        .expect("Invalid connector index");
++                    let res = Self::handle_message(connector, &header, generator);
+                     if let Err(error) = res {
+                         log::error!(
+                             "Error {error} while handling a message of {:?} kind",
+@@ -74,10 +62,16 @@ impl IPCServer {
+                     }
+                 }
+                 IPCEvent::Disconnect(index) => {
+-                    let connection = self.connections.remove(index);
+-                    if connection.endpoint == IPCEndpoint::Parent {
++                    let connector = self
++                        .connectors
++                        .get_mut(index)
++                        .expect("Invalid connector index");
++                    if connector.endpoint_pid() == self.client_pid {
+                         // The main process disconnected, leave
+                         return Ok(IPCServerState::ClientDisconnected);
++                    } else {
++                        // This closes the connection
++                        let _ = self.connectors.remove(index);
+                     }
+                 }
+             }
+@@ -87,34 +81,21 @@ impl IPCServer {
+     }
+ 
+     fn handle_message(
+-        &mut self,
+-        index: usize,
++        connector: &mut IPCConnector,
+         header: &messages::Header,
+         generator: &mut CrashGenerator,
+     ) -> Result<()> {
+-        let connection = self
+-            .connections
+-            .get_mut(index)
+-            .expect("Invalid connector index");
+-        let connector = &mut connection.connector;
+         let (data, ancillary_data) = connector.recv(header.size)?;
+ 
+-        let reply = match connection.endpoint {
+-            IPCEndpoint::Parent => generator.parent_message(header.kind, &data, ancillary_data),
+-            IPCEndpoint::Child => generator.child_message(header.kind, &data, ancillary_data),
+-            IPCEndpoint::External => generator.external_message(header.kind, &data, ancillary_data),
+-        }?;
+-
+-        match reply {
+-            MessageResult::Reply(reply) => connector.send_message(reply.as_ref())?,
+-            MessageResult::Connection(connector) => {
+-                self.connections.push(IPCConnection {
+-                    connector,
+-                    endpoint: IPCEndpoint::Child,
+-                });
+-            }
++        let reply = generator.client_message(
++            header.kind,
++            &data,
++            ancillary_data,
++            connector.endpoint_pid(),
++        )?;
+ 
+-            MessageResult::None => {}
++        if let Some(reply) = reply {
++            connector.send_message(reply.as_ref())?;
+         }
+ 
+         Ok(())
+diff --git a/toolkit/crashreporter/crash_helper_server/src/ipc_server/unix.rs b/toolkit/crashreporter/crash_helper_server/src/ipc_server/unix.rs
+index 701191c25a45..9e28da5b8cbe 100644
+--- a/toolkit/crashreporter/crash_helper_server/src/ipc_server/unix.rs
++++ b/toolkit/crashreporter/crash_helper_server/src/ipc_server/unix.rs
+@@ -1,81 +1,0 @@
+-/* This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+-
+-use crash_helper_common::{errors::IPCError, ignore_eintr, IPCEvent};
+-use nix::{
+-    errno::Errno,
+-    poll::{poll, PollFd, PollFlags, PollTimeout},
+-};
+-
+-use super::IPCServer;
+-
+-impl IPCServer {
+-    pub fn wait_for_events(&mut self) -> Result<Vec<IPCEvent>, IPCError> {
+-        let mut pollfds = Vec::with_capacity(1 + self.connections.len());
+-        pollfds.push(PollFd::new(self.listener.as_raw_ref(), PollFlags::POLLIN));
+-        pollfds.extend(
+-            self.connections.iter().map(|connection| {
+-                PollFd::new(connection.connector.as_raw_ref(), PollFlags::POLLIN)
+-            }),
+-        );
+-
+-        let mut events = Vec::<IPCEvent>::new();
+-        let mut num_events =
+-            ignore_eintr!(poll(&mut pollfds, PollTimeout::NONE)).map_err(IPCError::System)?;
+-
+-        for (index, pollfd) in pollfds.iter().enumerate() {
+-            // revents() returns None only if the kernel sends back data
+-            // that nix does not understand, we can safely assume this
+-            // never happens in practice hence the unwrap().
+-            let revents = pollfd.revents().unwrap();
+-
+-            if revents.contains(PollFlags::POLLHUP) {
+-                if index > 0 {
+-                    events.push(IPCEvent::Disconnect(index - 1));
+-                    // If a process was disconnected then skip all further
+-                    // processing of the socket. This wouldn't matter normally,
+-                    // but on macOS calling recvmsg() on a hung-up socket seems
+-                    // to trigger a kernel panic, one we've already encountered
+-                    // in the past. Doing things this way avoids the panic
+-                    // while having no real downsides.
+-                    continue;
+-                } else {
+-                    // This should never happen, unless the listener socket was
+-                    // not set up properly or a failure happened during setup.
+-                    return Err(IPCError::System(Errno::EFAULT));
+-                }
+-            }
+-
+-            if revents.contains(PollFlags::POLLIN) {
+-                if index == 0 {
+-                    if let Ok(connector) = self.listener.accept() {
+-                        events.push(IPCEvent::Connect(connector));
+-                    }
+-                } else {
+-                    // SAFETY: The index is guaranteed to be >0 and within
+-                    // the bounds of the connections array.
+-                    let connection = unsafe { self.connections.get_unchecked(index - 1) };
+-                    let header = connection.connector.recv_header();
+-                    if let Ok(header) = header {
+-                        // Note that if we encounter a failure we don't propagate
+-                        // it, when the socket gets disconnected we'll get a
+-                        // POLLHUP event anyway so deal with disconnections there
+-                        // instead of here.
+-                        events.push(IPCEvent::Header(index - 1, header));
+-                    }
+-                }
+-            }
+-
+-            if !revents.is_empty() {
+-                num_events -= 1;
+-
+-                if num_events == 0 {
+-                    break;
+-                }
+-            }
+-        }
+-
+-        Ok(events)
+-    }
+-}
+diff --git a/toolkit/crashreporter/crash_helper_server/src/ipc_server/windows.rs b/toolkit/crashreporter/crash_helper_server/src/ipc_server/windows.rs
+index 701191c25a45..9e28da5b8cbe 100644
+--- a/toolkit/crashreporter/crash_helper_server/src/ipc_server/windows.rs
++++ b/toolkit/crashreporter/crash_helper_server/src/ipc_server/windows.rs
+@@ -1,87 +1,0 @@
+-/* This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+- * You can obtain one at http://mozilla.org/MPL/2.0/. */
+-
+-use std::convert::TryInto;
+-
+-use crash_helper_common::{errors::IPCError, IPCEvent};
+-use windows_sys::Win32::{
+-    Foundation::{ERROR_BROKEN_PIPE, ERROR_INVALID_PARAMETER, FALSE, HANDLE, WAIT_OBJECT_0},
+-    System::{
+-        SystemServices::MAXIMUM_WAIT_OBJECTS,
+-        Threading::{WaitForMultipleObjects, INFINITE},
+-    },
+-};
+-
+-use super::IPCServer;
+-
+-impl IPCServer {
+-    pub fn wait_for_events(&mut self) -> Result<Vec<IPCEvent>, IPCError> {
+-        for connection in self.connections.iter_mut() {
+-            // TODO: We might get a broken pipe error here which would cause us to
+-            // fail instead of just dropping the disconnected connection.
+-            connection.connector.sched_recv_header()?;
+-        }
+-
+-        let native_events = self.collect_events();
+-
+-        if native_events.len() > MAXIMUM_WAIT_OBJECTS as usize {
+-            return Err(IPCError::WaitingFailure(Some(ERROR_INVALID_PARAMETER)));
+-        }
+-
+-        // SAFETY: This is less than MAXIMUM_WAIT_OBJECTS
+-        let native_events_len: u32 = unsafe { native_events.len().try_into().unwrap_unchecked() };
+-
+-        let res = unsafe {
+-            WaitForMultipleObjects(
+-                native_events_len,
+-                native_events.as_ptr(),
+-                FALSE, // bWaitAll
+-                INFINITE,
+-            )
+-        };
+-
+-        if res >= (WAIT_OBJECT_0 + native_events_len) {
+-            return Err(IPCError::WaitingFailure(None));
+-        }
+-
+-        let index = (res - WAIT_OBJECT_0) as usize;
+-
+-        let mut events = Vec::<IPCEvent>::new();
+-        if index == 0 {
+-            if let Ok(connector) = self.listener.accept() {
+-                events.push(IPCEvent::Connect(connector));
+-            }
+-        } else {
+-            let index = index - 1;
+-            // SAFETY: The index is guaranteed to be within the bounds of the connections array.
+-            let connection = unsafe { self.connections.get_unchecked_mut(index) };
+-            let header = connection.connector.collect_header();
+-
+-            match header {
+-                Ok(header) => {
+-                    events.push(IPCEvent::Header(index, header));
+-                }
+-                Err(error) => match error {
+-                    IPCError::System(_code @ ERROR_BROKEN_PIPE) => {
+-                        events.push(IPCEvent::Disconnect(index));
+-                    }
+-                    _ => return Err(error),
+-                },
+-            }
+-        }
+-
+-        Ok(events)
+-    }
+-
+-    fn collect_events(&self) -> Vec<HANDLE> {
+-        let mut events = Vec::with_capacity(1 + self.connections.len());
+-
+-        events.push(self.listener.event_raw_handle());
+-        for connection in self.connections.iter() {
+-            events.push(connection.connector.event_raw_handle());
+-        }
+-
+-        events
+-    }
+-}
+diff --git a/toolkit/crashreporter/crash_helper_server/src/lib.rs b/toolkit/crashreporter/crash_helper_server/src/lib.rs
+index 46307ac314e5..31f0fb429f4f 100644
+--- a/toolkit/crashreporter/crash_helper_server/src/lib.rs
++++ b/toolkit/crashreporter/crash_helper_server/src/lib.rs
+@@ -61,14 +61,14 @@ pub unsafe extern "C" fn crash_generator_logic_desktop(
+         })
+         .unwrap();
+ 
+-    let crash_generator = CrashGenerator::new(breakpad_data, minidump_path)
++    let crash_generator = CrashGenerator::new(client_pid, breakpad_data, minidump_path)
+         .map_err(|error| {
+             log::error!("Could not create the crash generator (error: {error})");
+             error
+         })
+         .unwrap();
+ 
+-    let ipc_server = IPCServer::new(listener, connector);
++    let ipc_server = IPCServer::new(client_pid, listener, connector);
+ 
+     main_loop(ipc_server, crash_generator)
+ }
+@@ -102,7 +102,7 @@ pub unsafe extern "C" fn crash_generator_logic_android(
+         .into_string()
+         .unwrap();
+     let minidump_path = OsString::from(minidump_path);
+-    let crash_generator = CrashGenerator::new(breakpad_data, minidump_path)
++    let crash_generator = CrashGenerator::new(client_pid, breakpad_data, minidump_path)
+         .map_err(|error| {
+             log::error!("Could not create the crash generator (error: {error})");
+             error
+@@ -121,7 +121,7 @@ pub unsafe extern "C" fn crash_generator_logic_android(
+             log::error!("Could not use the pipe (error: {error})");
+         })
+         .unwrap();
+-    let ipc_server = IPCServer::new(listener, connector);
++    let ipc_server = IPCServer::new(client_pid, listener, connector);
+ 
+     // On Android the main thread is used to respond to the intents so we
+     // can't block it. Run the crash generation loop in a separate thread.
+diff --git a/toolkit/crashreporter/nsDummyExceptionHandler.cpp b/toolkit/crashreporter/nsDummyExceptionHandler.cpp
+index 037e2ebf1db1..5d1bacd26b1e 100644
+--- a/toolkit/crashreporter/nsDummyExceptionHandler.cpp
++++ b/toolkit/crashreporter/nsDummyExceptionHandler.cpp
+@@ -6,8 +6,6 @@
+ 
+ #include "nsExceptionHandler.h"
+ 
+-using mozilla::UniqueFileHandle;
+-
+ namespace CrashReporter {
+ 
+ void AnnotateOOMAllocationSize(size_t size) {}
+@@ -207,16 +205,18 @@ void SetNotificationPipeForChild(FileHandle breakpadFd,
+ 
+ CrashPipeType GetChildNotificationPipe() { return nullptr; }
+ 
+-UniqueFileHandle RegisterChildIPCChannel() { return UniqueFileHandle(); }
+-
+ #if defined(MOZ_WIDGET_ANDROID)
+ void SetCrashHelperPipes(FileHandle breakpadFd, FileHandle crashHelperFd) {}
+ #endif  // defined(MOZ_WIDGET_ANDROID)
+ 
++#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++MOZ_EXPORT ProcessId GetCrashHelperPid() { return -1; };
++#endif  // XP_LINUX && !defined(MOZ_WIDGET_ANDROID)
++
+ bool GetLastRunCrashID(nsAString& id) { return false; }
+ 
+ bool SetRemoteExceptionHandler(CrashPipeType aCrashPipe,
+-                               UniqueFileHandle aCrashHelperPipe) {
++                               Maybe<ProcessId> aCrashHelperPid) {
+   return false;
+ }
+ 
+diff --git a/toolkit/crashreporter/nsExceptionHandler.cpp b/toolkit/crashreporter/nsExceptionHandler.cpp
+index d931c0c05f79..cf65f414fd89 100644
+--- a/toolkit/crashreporter/nsExceptionHandler.cpp
++++ b/toolkit/crashreporter/nsExceptionHandler.cpp
+@@ -258,6 +258,8 @@ static char* androidUserSerial = nullptr;
+ static const char* androidStartServiceCommand = nullptr;
+ #endif
+ 
++static Maybe<ProcessId> gCrashHelperPid;
++
+ // this holds additional data sent via the API
+ static Mutex* notesFieldLock;
+ static nsCString* notesField = nullptr;
+@@ -1717,18 +1719,22 @@ static bool IsCrashingException(EXCEPTION_POINTERS* exinfo) {
+ // Do various actions to prepare the child process for minidump generation.
+ // This includes disabling the I/O interposer and DLL blocklist which both
+ // would get in the way. We also free the resources we have reserved, such as
+-// address space on 32-bit Windows builds, so that they're available to the
+-// minidump generation code.
+-static void PrepareForMinidump(bool isChildProcess = true) {
++// address space on 32-bit Windows builds and file descriptors on Linux so that
++// they're available to the minidump generation code.
++static void PrepareForMinidump() {
+   mozilla::IOInterposer::Disable();
+   ReleaseResources();
+-
+-  if (isChildProcess) {
+-    crash_helper_wait_for_rendezvous();
+-  }
+-#if defined(XP_WIN) && defined(DEBUG) && defined(HAS_DLL_BLOCKLIST)
++#if defined(XP_WIN)
++#  if defined(DEBUG) && defined(HAS_DLL_BLOCKLIST)
+   DllBlocklist_Shutdown();
+-#endif  // defined(XP_WIN) && defined(DEBUG) && defined(HAS_DLL_BLOCKLIST)
++#  endif
++#elif defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++  if (gCrashHelperPid.isSome()) {
++    // Ignore the return value because we're in the exception handler, so
++    // there's not much we can do safely, not even log the error.
++    Unused << prctl(PR_SET_PTRACER, gCrashHelperPid.value());
++  }
++#endif
+ }
+ 
+ #ifdef XP_WIN
+@@ -1744,7 +1750,7 @@ static ExceptionHandler::FilterResult Filter(void* context,
+     return ExceptionHandler::FilterResult::ContinueSearch;
+   }
+ 
+-  PrepareForMinidump(/* isChildProcess */ false);
++  PrepareForMinidump();
+   return ExceptionHandler::FilterResult::HandleException;
+ }
+ 
+@@ -1789,7 +1795,7 @@ static MINIDUMP_TYPE GetMinidumpType() {
+ #else
+ 
+ static bool Filter(void* context) {
+-  PrepareForMinidump(/* isChildProcess */ false);
++  PrepareForMinidump();
+   return true;
+ }
+ 
+@@ -3337,19 +3343,22 @@ CrashPipeType GetChildNotificationPipe() {
+ #endif
+ }
+ 
+-UniqueFileHandle RegisterChildIPCChannel() {
++#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++
++ProcessId GetCrashHelperPid() {
+   if (gCrashHelperClient) {
+-    AncillaryData ipc_endpoint = register_child_ipc_channel(gCrashHelperClient);
+-    return UniqueFileHandle{ipc_endpoint};
++    return crash_helper_pid(gCrashHelperClient);
+   }
+ 
+-  return UniqueFileHandle();
++  return base::kInvalidProcessId;
+ }
+ 
++#endif  // defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++
+ bool SetRemoteExceptionHandler(CrashPipeType aCrashPipe,
+-                               UniqueFileHandle aCrashHelperPipe) {
++                               Maybe<ProcessId> aCrashHelperPid) {
+   MOZ_ASSERT(!gExceptionHandler, "crash client already init'd");
+-  crash_helper_rendezvous(aCrashHelperPipe.release());
++  gCrashHelperPid = aCrashHelperPid;
+   RegisterRuntimeExceptionModule();
+   InitializeAppNotes();
+   RegisterAnnotations();
+diff --git a/toolkit/crashreporter/nsExceptionHandler.h b/toolkit/crashreporter/nsExceptionHandler.h
+index 4c4278b719ea..cd4f7402e7f2 100644
+--- a/toolkit/crashreporter/nsExceptionHandler.h
++++ b/toolkit/crashreporter/nsExceptionHandler.h
+@@ -14,7 +14,9 @@
+ 
+ #include "mozilla/EnumeratedArray.h"
+ #include "mozilla/Maybe.h"
+-#include "mozilla/UniquePtrExtensions.h"  // For UniqueFileHandle
++#if !defined(XP_WIN)
++#  include "mozilla/UniquePtrExtensions.h"  // For UniqueFileHandle
++#endif                                      // XP_WIN
+ 
+ #include "CrashAnnotations.h"
+ 
+@@ -270,11 +272,17 @@ using CrashPipeType = mozilla::UniqueFileHandle;
+ void SetCrashHelperPipes(FileHandle breakpadFd, FileHandle crashHelperFd);
+ #endif
+ CrashPipeType GetChildNotificationPipe();
+-mozilla::UniqueFileHandle RegisterChildIPCChannel();
++
++#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++
++// Return the pid of the crash helper process.
++MOZ_EXPORT ProcessId GetCrashHelperPid();
++
++#endif  // XP_LINUX && !defined(MOZ_WIDGET_ANDROID)
+ 
+ // Child-side API
+ MOZ_EXPORT bool SetRemoteExceptionHandler(
+-    CrashPipeType aCrashPipe, mozilla::UniqueFileHandle aCrashHelperPipe);
++    CrashPipeType aCrashPipe, Maybe<ProcessId> aCrashHelperPid = Nothing());
+ bool UnsetRemoteExceptionHandler(bool wasSet = true);
+ 
+ }  // namespace CrashReporter
+diff --git a/toolkit/xre/GeckoArgs.h b/toolkit/xre/GeckoArgs.h
+index c54380ff58f2..8cdd0fd967e4 100644
+--- a/toolkit/xre/GeckoArgs.h
++++ b/toolkit/xre/GeckoArgs.h
+@@ -234,9 +234,11 @@ static CommandLineArg<const char*> sCrashReporter{"-crashReporter",
+ #else
+ static CommandLineArg<UniqueFileHandle> sCrashReporter{"-crashReporter",
+                                                        "crashreporter"};
++#  if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++static CommandLineArg<uint64_t> sCrashHelperPid{"-crashHelperPid",
++                                                "crashhelperpid"};
++#  endif  // defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
+ #endif
+-static CommandLineArg<UniqueFileHandle> sCrashHelper{"-crashHelper",
+-                                                     "crashhelper"};
+ 
+ #if defined(XP_WIN)
+ #  if defined(MOZ_SANDBOX)
+diff --git a/toolkit/xre/nsEmbedFunctions.cpp b/toolkit/xre/nsEmbedFunctions.cpp
+index b47deb1b8595..9217d2b7e392 100644
+--- a/toolkit/xre/nsEmbedFunctions.cpp
++++ b/toolkit/xre/nsEmbedFunctions.cpp
+@@ -351,10 +351,15 @@ nsresult XRE_InitChildProcess(int aArgc, char* aArgv[],
+   bool exceptionHandlerIsSet = false;
+   if (!CrashReporter::IsDummy()) {
+     auto crashReporterArg = geckoargs::sCrashReporter.Get(aArgc, aArgv);
+-    auto crashHelperArg = geckoargs::sCrashHelper.Get(aArgc, aArgv);
+-    if (crashReporterArg && crashHelperArg) {
++    if (crashReporterArg) {
++      Maybe<CrashReporter::ProcessId> crashHelperPid;
++#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++      crashHelperPid = geckoargs::sCrashHelperPid.Get(aArgc, aArgv);
++      MOZ_ASSERT(crashHelperPid.isSome());
++#endif  // defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
++
+       exceptionHandlerIsSet = CrashReporter::SetRemoteExceptionHandler(
+-          std::move(*crashReporterArg), std::move(*crashHelperArg));
++          std::move(*crashReporterArg), crashHelperPid);
+       MOZ_ASSERT(exceptionHandlerIsSet,
+                  "Should have been able to set remote exception handler");
+ 
