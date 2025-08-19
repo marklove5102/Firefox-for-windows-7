@@ -1,0 +1,1 @@
+Bug 1981002 - Crash helper leaks a unix fd on macOS and Linux that persists past tab close r=jld    2025-08-06 04:19:25    06b99d914cbc4aa2d181521c4610ebd8aec5d3f0
