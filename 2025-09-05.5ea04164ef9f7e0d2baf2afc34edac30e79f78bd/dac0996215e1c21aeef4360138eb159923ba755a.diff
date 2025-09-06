@@ -1,0 +1,87 @@
+diff --git a/base/trace_event/trace_event_etw_export_win.cc b/base/trace_event/trace_event_etw_export_win.cc
+index 6def5233513f6..e97ab56be6e03 100644
+--- a/base/trace_event/trace_event_etw_export_win.cc
++++ b/base/trace_event/trace_event_etw_export_win.cc
+@@ -30,6 +30,21 @@
+ #endif
+ 
+ namespace {
++// Typedefs for use with GetProcAddress
++typedef ULONG(__stdcall* tEventRegister)(LPCGUID ProviderId,
++                                         PENABLECALLBACK EnableCallback,
++                                         PVOID CallbackContext,
++                                         PREGHANDLE RegHandle);
++typedef ULONG(__stdcall* tEventWrite)(REGHANDLE RegHandle,
++                                      PCEVENT_DESCRIPTOR EventDescriptor,
++                                      ULONG UserDataCount,
++                                      PEVENT_DATA_DESCRIPTOR UserData);
++typedef ULONG(__stdcall* tEventUnregister)(REGHANDLE RegHandle);
++
++tEventRegister EventRegisterProc = nullptr;
++tEventWrite EventWriteProc = nullptr;
++tEventUnregister EventUnregisterProc = nullptr;
++
+ 
+ // |kFilteredEventGroupNames| contains the event categories that can be
+ // exported individually. These categories can be enabled by passing the correct
+@@ -83,6 +98,38 @@ const size_t kNumberOfCategories = ARRAYSIZE(kFilteredEventGroupNames) + 2U;
+ 
+ }  // namespace
+ 
++// Redirector function for EventRegister. Called by macros in
++// chrome_events_win.h
++ULONG EVNTAPI EventRegister(LPCGUID ProviderId,
++                            PENABLECALLBACK EnableCallback,
++                            PVOID CallbackContext,
++                            PREGHANDLE RegHandle) {
++  if (EventRegisterProc)
++    return EventRegisterProc(ProviderId, EnableCallback, CallbackContext,
++                             RegHandle);
++  *RegHandle = 0;
++  return 0;
++}
++
++// Redirector function for EventWrite. Called by macros in
++// chrome_events_win.h
++ULONG EVNTAPI EventWrite(REGHANDLE RegHandle,
++                         PCEVENT_DESCRIPTOR EventDescriptor,
++                         ULONG UserDataCount,
++                         PEVENT_DATA_DESCRIPTOR UserData) {
++  if (EventWriteProc)
++    return EventWriteProc(RegHandle, EventDescriptor, UserDataCount, UserData);
++  return 0;
++}
++
++// Redirector function for EventUnregister. Called by macros in
++// chrome_events_win.h
++ULONG EVNTAPI EventUnregister(REGHANDLE RegHandle) {
++  if (EventUnregisterProc)
++    return EventUnregisterProc(RegHandle);
++  return 0;
++}
++
+ namespace base {
+ namespace trace_event {
+ 
+@@ -112,9 +159,21 @@ class TraceEventETWExport::ETWKeywordUpdateThread
+   // This allows us to detect changes to enable/disable/keyword changes.
+   // ChromeHandle and the other parameters to EventRegister are all generated
+   // globals from chrome_events_win.h
++  // Find Advapi32.dll. This should always succeed.
++  HMODULE AdvapiDLL = ::LoadLibraryW(L"Advapi32.dll");
++  if (AdvapiDLL) {
++    // Try to find the ETW functions. This will fail on XP.
++    EventRegisterProc = reinterpret_cast<tEventRegister>(
++        ::GetProcAddress(AdvapiDLL, "EventRegister"));
++    EventWriteProc = reinterpret_cast<tEventWrite>(
++        ::GetProcAddress(AdvapiDLL, "EventWrite"));
++    EventUnregisterProc = reinterpret_cast<tEventUnregister>(
++        ::GetProcAddress(AdvapiDLL, "EventUnregister"));
++
+   DCHECK(!ChromeHandle);
+   EventRegister(&CHROME, &EtwEnableCallback, &CHROME_Context, &ChromeHandle);
+   TraceEventETWExport::is_registration_complete_ = true;
++  }
+ 
+   // Make sure to initialize the map with all the group names. Subsequent
+   // modifications will be made by the background thread and only affect the

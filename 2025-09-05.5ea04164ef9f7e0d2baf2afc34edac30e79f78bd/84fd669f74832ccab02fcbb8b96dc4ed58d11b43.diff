@@ -1,0 +1,33 @@
+diff --git a/chrome_elf/nt_registry/nt_registry.cc b/chrome_elf/nt_registry/nt_registry.cc
+index 373f00945682e..31585cf46d154 100644
+--- a/chrome_elf/nt_registry/nt_registry.cc
++++ b/chrome_elf/nt_registry/nt_registry.cc
+@@ -10,7 +10,7 @@ namespace {
+ RtlInitUnicodeStringFunction g_rtl_init_unicode_string = nullptr;
+ NtCreateKeyFunction g_nt_create_key = nullptr;
+ NtDeleteKeyFunction g_nt_delete_key = nullptr;
+-NtOpenKeyExFunction g_nt_open_key_ex = nullptr;
++NtOpenKeyFunction g_nt_open_key_ex = nullptr;
+ NtCloseFunction g_nt_close = nullptr;
+ NtQueryKeyFunction g_nt_query_key = nullptr;
+ NtEnumerateKeyFunction g_nt_enumerate_key = nullptr;
+@@ -55,8 +55,8 @@ bool InitNativeRegApi() {
+   g_nt_delete_key = reinterpret_cast<NtDeleteKeyFunction>(
+       ::GetProcAddress(ntdll, "NtDeleteKey"));
+ 
+-  g_nt_open_key_ex = reinterpret_cast<NtOpenKeyExFunction>(
+-      ::GetProcAddress(ntdll, "NtOpenKeyEx"));
++  g_nt_open_key_ex = reinterpret_cast<NtOpenKeyFunction>(
++      ::GetProcAddress(ntdll, "NtOpenKey"));
+ 
+   g_nt_close =
+       reinterpret_cast<NtCloseFunction>(::GetProcAddress(ntdll, "NtClose"));
+@@ -319,7 +319,7 @@ bool OpenRegKey(ROOT_KEY root,
+   InitializeObjectAttributes(&obj, &key_path_uni, OBJ_CASE_INSENSITIVE, NULL,
+                              NULL);
+ 
+-  status = g_nt_open_key_ex(out_handle, access, &obj, 0);
++  status = g_nt_open_key_ex(out_handle, access, &obj);
+   // See if caller wants the NTSTATUS.
+   if (error_code)
+     *error_code = status;

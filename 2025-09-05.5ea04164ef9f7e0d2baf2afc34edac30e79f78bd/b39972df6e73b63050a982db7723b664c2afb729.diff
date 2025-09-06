@@ -1,0 +1,13 @@
+diff --git a/base/trace_event/process_memory_dump.h b/base/trace_event/process_memory_dump.h
+index adaf14f9074f3..d57490ec5fb99 100644
+--- a/base/trace_event/process_memory_dump.h
++++ b/base/trace_event/process_memory_dump.h
+@@ -26,7 +26,7 @@
+ 
+ // Define COUNT_RESIDENT_BYTES_SUPPORTED if platform supports counting of the
+ // resident memory.
+-#if !defined(OS_NACL)
++#if (!defined(OS_WIN) && !defined(OS_NACL))
+ #define COUNT_RESIDENT_BYTES_SUPPORTED
+ #endif
+ 

@@ -1,0 +1,12 @@
+diff --git a/services/service_manager/sandbox/win/sandbox_win.cc b/services/service_manager/sandbox/win/sandbox_win.cc
+index 8b6ce19..86b0dcb 100644
+--- a/services/service_manager/sandbox/win/sandbox_win.cc
++++ b/services/service_manager/sandbox/win/sandbox_win.cc
+@@ -414,7 +414,6 @@ bool AddPolicyForSandboxedProcess(sandbox::TargetPolicy* policy) {
+   result = policy->SetIntegrityLevel(sandbox::INTEGRITY_LEVEL_LOW);
+   if (result != sandbox::SBOX_ALL_OK)
+     return result;
+-  policy->SetLockdownDefaultDacl();
+ 
+   result = policy->SetAlternateDesktop(true);
+   if (result != sandbox::SBOX_ALL_OK) {

@@ -1,0 +1,22 @@
+diff --git a/third_party/usrsctp/BUILD.gn b/third_party/usrsctp/BUILD.gn
+index 7e65a69cef48d..4662796376561 100644
+--- a/third_party/usrsctp/BUILD.gn
++++ b/third_party/usrsctp/BUILD.gn
+@@ -123,7 +123,16 @@ static_library("usrsctp") {
+   }
+ 
+   if (is_win) {
+-    defines += [ "__Userspace_os_Windows" ]
++    defines += [
++      "__Userspace_os_Windows",
++
++      # Manually setting WINVER and _WIN32_WINNT is needed because Chrome
++      # sets WINVER to a newer version of  windows. But compiling usrsctp
++      # this way would is incompatible  with windows XP.
++      "WINVER=0x0502",
++      "_WIN32_WINNT=0x0502",
++    ]
++    configs -= [ "//build/config/win:winver" ]
+   } else {
+     defines += [ "NON_WINDOWS_DEFINE" ]
+   }

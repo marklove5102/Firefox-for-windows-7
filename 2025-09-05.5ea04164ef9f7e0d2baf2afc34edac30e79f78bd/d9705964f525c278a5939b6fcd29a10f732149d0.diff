@@ -1,0 +1,17 @@
+diff --git a/base/debug/activity_tracker.cc b/base/debug/activity_tracker.cc
+index 7b3b185c4b779..8d2fe3a78c953 100644
+--- a/base/debug/activity_tracker.cc
++++ b/base/debug/activity_tracker.cc
+@@ -59,7 +59,11 @@ ActivityData ActivityData::ForThread(const PlatformThreadHandle& handle) {
+   ThreadRef thread_ref;
+   thread_ref.as_id = 0;  // Zero the union in case other is smaller.
+ #if defined(OS_WIN)
+-  thread_ref.as_tid = ::GetThreadId(handle.platform_handle());
++  static const auto get_thread_id =
++      reinterpret_cast<decltype(::GetThreadId)*>(::GetProcAddress(
++          ::GetModuleHandle(L"kernel32.dll"), "GetThreadId"));
++  if (get_thread_id)
++    thread_ref.as_tid = get_thread_id(handle.platform_handle());
+ #elif defined(OS_POSIX)
+   thread_ref.as_handle = handle.platform_handle();
+ #endif

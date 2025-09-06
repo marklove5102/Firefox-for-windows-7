@@ -1,0 +1,36 @@
+diff --git a/ui/display/win/screen_win.cc b/ui/display/win/screen_win.cc
+index 90f4154bb7b97..ce544a9a76897 100644
+--- a/ui/display/win/screen_win.cc
++++ b/ui/display/win/screen_win.cc
+@@ -76,16 +76,29 @@ bool GetPathInfo(HMONITOR monitor, DISPLAYCONFIG_PATH_INFO* path_info) {
+   if (!GetMonitorInfoW(monitor, &view_info))
+     return false;
+ 
++    LONG (WINAPI * pfnQueryDisplayConfig)(UINT Flags,UINT *pNumPathArrayElements, DISPLAYCONFIG_PATH_INFO *pPathInfoArray,
++                                      UINT *pNumModeInfoArrayElements, DISPLAYCONFIG_MODE_INFO *pModeInfoArray,
++                                      DISPLAYCONFIG_TOPOLOGY_ID *pCurrentTopologyId) = 0;
++    LONG (WINAPI * pfnGetDisplayConfigBufferSizes)(UINT Flags, UINT *pNumPathArrayElements, UINT *pNumModeInfoArrayElements) = 0;
++    HMODULE hUser = GetModuleHandleW(L"user32.dll");
++    if (hUser)
++    {
++        *(uintptr_t *)&pfnQueryDisplayConfig = (uintptr_t)GetProcAddress(hUser, "QueryDisplayConfig");
++
++        *(uintptr_t *)&pfnGetDisplayConfigBufferSizes = (uintptr_t)GetProcAddress(hUser, "GetDisplayConfigBufferSizes");
++    }
++    if (!pfnQueryDisplayConfig || !pfnGetDisplayConfigBufferSizes)
++      return false;
+   // Get all path infos.
+   do {
+-    if (GetDisplayConfigBufferSizes(
++    if (pfnGetDisplayConfigBufferSizes(
+             QDC_ONLY_ACTIVE_PATHS, &num_path_array_elements,
+             &num_mode_info_array_elements) != ERROR_SUCCESS) {
+       return false;
+     }
+     path_infos.resize(num_path_array_elements);
+     mode_infos.resize(num_mode_info_array_elements);
+-    result = QueryDisplayConfig(
++    result = pfnQueryDisplayConfig(
+         QDC_ONLY_ACTIVE_PATHS, &num_path_array_elements, path_infos.data(),
+         &num_mode_info_array_elements, mode_infos.data(), nullptr);
+   } while (result == ERROR_INSUFFICIENT_BUFFER);

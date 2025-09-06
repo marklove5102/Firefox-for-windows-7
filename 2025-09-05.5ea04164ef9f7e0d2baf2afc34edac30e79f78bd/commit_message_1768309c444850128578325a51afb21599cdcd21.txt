@@ -1,0 +1,1 @@
+win: Move NTDDI_VERSION into winver, stop setting it for usrsctp    2016/8/23 2:38:09    1768309c444850128578325a51afb21599cdcd21

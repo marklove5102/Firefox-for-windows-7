@@ -1,0 +1,13 @@
+diff --git a/ui/gfx/font_fallback_win.cc b/ui/gfx/font_fallback_win.cc
+index e3e89dffee632..c745980cf24fe 100644
+--- a/ui/gfx/font_fallback_win.cc
++++ b/ui/gfx/font_fallback_win.cc
+@@ -353,6 +353,8 @@ bool GetFallbackFont(const Font& font,
+   if (g_factory == nullptr) {
+     gfx::win::CreateDWriteFactory(&g_factory);
+   }
++  if (!g_factory)
++    return GetUniscribeFallbackFont(font, text, text_length, result);
+   Microsoft::WRL::ComPtr<IDWriteFactory2> factory2;
+   g_factory->QueryInterface(factory2.GetAddressOf());
+   if (!factory2) {

@@ -1,0 +1,163 @@
+diff --git a/base/process/memory.h b/base/process/memory.h
+index 62c3312598a15..f7fc569abaf3b 100644
+--- a/base/process/memory.h
++++ b/base/process/memory.h
+@@ -25,6 +25,14 @@
+ 
+ namespace base {
+ 
++// Enables low fragmentation heap (LFH) for every heaps of this process. This
++// won't have any effect on heaps created after this function call. It will not
++// modify data allocated in the heaps before calling this function. So it is
++// better to call this function early in initialization and again before
++// entering the main loop.
++// Note: Returns true on Windows 2000 without doing anything.
++BASE_EXPORT bool EnableLowFragmentationHeap();
++
+ // Enables 'terminate on heap corruption' flag. Helps protect against heap
+ // overflow. Has no effect if the OS doesn't provide the necessary facility.
+ BASE_EXPORT void EnableTerminationOnHeapCorruption();
+diff --git a/base/process/memory_unittest.cc b/base/process/memory_unittest.cc
+index 9e5de0c95452e..c4728c5237126 100644
+--- a/base/process/memory_unittest.cc
++++ b/base/process/memory_unittest.cc
+@@ -67,6 +67,49 @@ TEST(ProcessMemoryTest, GetModuleFromAddress) {
+ typedef BOOL (WINAPI* HeapQueryFn)  \
+     (HANDLE, HEAP_INFORMATION_CLASS, PVOID, SIZE_T, PSIZE_T);
+ 
++
++TEST(ProcessMemoryTest, EnableLFH) {
++  ASSERT_TRUE(base::EnableLowFragmentationHeap());
++  if (IsDebuggerPresent()) {
++    // Under these conditions, LFH can't be enabled. There's no point to test
++    // anything.
++    const char* no_debug_env = getenv("_NO_DEBUG_HEAP");
++    if (!no_debug_env || strcmp(no_debug_env, "1"))
++      return;
++  }
++  HMODULE kernel32 = GetModuleHandle(L"kernel32.dll");
++  ASSERT_TRUE(kernel32 != NULL);
++  HeapQueryFn heap_query = reinterpret_cast<HeapQueryFn>(GetProcAddress(
++      kernel32,
++      "HeapQueryInformation"));
++
++  // On Windows 2000, the function is not exported. This is not a reason to
++  // fail but we won't be able to retrieves information about the heap, so we
++  // should stop here.
++  if (heap_query == NULL)
++    return;
++
++  HANDLE heaps[1024] = { 0 };
++  unsigned number_heaps = GetProcessHeaps(1024, heaps);
++  EXPECT_GT(number_heaps, 0u);
++  for (unsigned i = 0; i < number_heaps; ++i) {
++    ULONG flag = 0;
++    SIZE_T length;
++    ASSERT_NE(0, heap_query(heaps[i],
++                            HeapCompatibilityInformation,
++                            &flag,
++                            sizeof(flag),
++                            &length));
++    // If flag is 0, the heap is a standard heap that does not support
++    // look-asides. If flag is 1, the heap supports look-asides. If flag is 2,
++    // the heap is a low-fragmentation heap (LFH). Note that look-asides are not
++    // supported on the LFH.
++
++    // We don't have any documented way of querying the HEAP_NO_SERIALIZE flag.
++    EXPECT_LE(flag, 2u);
++    EXPECT_NE(flag, 1u);
++  }
++}
+ #endif  // defined(OS_WIN)
+ 
+ #if defined(OS_MACOSX)
+diff --git a/base/process/memory_win.cc b/base/process/memory_win.cc
+index 17d588aab739b..643beaf860e29 100644
+--- a/base/process/memory_win.cc
++++ b/base/process/memory_win.cc
+@@ -4,6 +4,7 @@
+ 
+ #include <windows.h>  // Must be in front of other Windows header files.
+ 
++#include <memory>
+ #include <new.h>
+ #include <psapi.h>
+ #include <stddef.h>
+@@ -50,8 +50,46 @@ typedef BOOL (WINAPI* HeapSetFn)(HANDLE, HEAP_INFORMATION_CLASS, PVOID, SIZE_T);
+ 
+ #pragma warning(pop)
+ 
++// HeapSetInformation function pointer.
++typedef BOOL (WINAPI* HeapSetFn)(HANDLE, HEAP_INFORMATION_CLASS, PVOID, SIZE_T);
++
+ }  // namespace
+ 
++bool EnableLowFragmentationHeap() {
++  HMODULE kernel32 = GetModuleHandle(L"kernel32.dll");
++  HeapSetFn heap_set = reinterpret_cast<HeapSetFn>(GetProcAddress(
++      kernel32,
++      "HeapSetInformation"));
++
++  // On Windows 2000, the function is not exported. This is not a reason to
++  // fail.
++  if (!heap_set)
++    return true;
++
++  unsigned number_heaps = GetProcessHeaps(0, NULL);
++  if (!number_heaps)
++    return false;
++
++  // Gives us some extra space in the array in case a thread is creating heaps
++  // at the same time we're querying them.
++  static const int MARGIN = 8;
++  std::unique_ptr<HANDLE[]> heaps(new HANDLE[number_heaps + MARGIN]);
++  number_heaps = GetProcessHeaps(number_heaps + MARGIN, heaps.get());
++  if (!number_heaps)
++    return false;
++
++  for (unsigned i = 0; i < number_heaps; ++i) {
++    ULONG lfh_flag = 2;
++    // Don't bother with the result code. It may fails on heaps that have the
++    // HEAP_NO_SERIALIZE flag. This is expected and not a problem at all.
++    heap_set(heaps[i],
++             HeapCompatibilityInformation,
++             &lfh_flag,
++             sizeof(lfh_flag));
++  }
++  return true;
++}
++
+ void TerminateBecauseOutOfMemory(size_t size) {
+   OnNoMemory(size);
+ }
+diff --git a/chrome/app/chrome_exe_main_win.cc b/chrome/app/chrome_exe_main_win.cc
+index 7139ba3d37463..a180fd0f43370 100644
+--- a/chrome/app/chrome_exe_main_win.cc
++++ b/chrome/app/chrome_exe_main_win.cc
+@@ -130,6 +130,17 @@ void EnableHighDPISupport() {
+       chrome::NOTIFY_SUCCESS;
+ }
+ 
++void SwitchToLFHeap() {
++  // Only needed on XP but harmless on other Windows flavors.
++  auto crt_heap = _get_heap_handle();
++  ULONG enable_LFH = 2;
++  if (HeapSetInformation(reinterpret_cast<HANDLE>(crt_heap),
++                         HeapCompatibilityInformation,
++                         &enable_LFH, sizeof(enable_LFH))) {
++    VLOG(1) << "Low fragmentation heap enabled.";
++  }
++}
++
+ // Returns true if |command_line| contains a /prefetch:# argument where # is in
+ // [1, 8].
+ bool HasValidWindowsPrefetchArgument(const base::CommandLine& command_line) {
+@@ -194,6 +205,8 @@ int main() {
+     return RunFallbackCrashHandler(*command_line);
+   }
+ 
++  SwitchToLFHeap();
++
+   const base::TimeTicks exe_entry_point_ticks = base::TimeTicks::Now();
+ 
+   // Signal Chrome Elf that Chrome has begun to start.

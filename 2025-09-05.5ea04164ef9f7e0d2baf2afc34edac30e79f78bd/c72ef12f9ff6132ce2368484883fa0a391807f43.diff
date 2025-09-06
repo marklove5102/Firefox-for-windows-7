@@ -1,0 +1,83 @@
+diff --git a/components/gwp_asan/client/sampling_allocator_shims.cc b/components/gwp_asan/client/sampling_allocator_shims.cc
+index 5651bd2475910..9f64d393067fb 100644
+--- a/components/gwp_asan/client/sampling_allocator_shims.cc
++++ b/components/gwp_asan/client/sampling_allocator_shims.cc
+@@ -23,6 +23,44 @@
+ #include <pthread.h>
+ #endif
+ 
++#include <stddef.h>
++#include <windows.h>
++
++#include "base/logging.h"
++
++namespace gwp_asan {
++namespace internal {
++
++// Due to https://crbug.com/881352 the sampling allocator shims can not use
++// base::ThreadLocalStorage to access the TLS. Instead, we use platform-specific
++// TLS APIs.
++//
++// TODO(vtsyrklevich): This implementation is identical to code in the
++// base::PoissonAllocationSampler, see if they can share code.
++using TLSKey = DWORD;
++
++void TLSInit(TLSKey* key) {
++  *key = ::TlsAlloc();
++  CHECK_NE(TLS_OUT_OF_INDEXES, *key);
++}
++
++size_t TLSGetValue(const TLSKey& key) {
++  // TlsGetValue() sets GetLastError() to ERROR_SUCCESS to differentiate between
++  // success and failure since any return value is a possible valid result.
++  // Preserve it in case it was already set.
++  int last_error = ::GetLastError();
++  size_t retval = reinterpret_cast<size_t>(::TlsGetValue(key));
++  ::SetLastError(last_error);
++  return retval;
++}
++
++void TLSSetValue(const TLSKey& key, size_t value) {
++  ::TlsSetValue(key, reinterpret_cast<LPVOID>(value));
++}
++
++}  // namespace internal
++}  // namespace gwp_asan
++
+ namespace gwp_asan {
+ namespace internal {
+ 
+@@ -37,6 +75,8 @@ class SamplingState {
+   constexpr SamplingState() {}
+ 
+   void Init(size_t sampling_frequency) {
++    TLSInit(&tls_key_);
++
+     DCHECK_GT(sampling_frequency, 0U);
+     sampling_frequency_ = sampling_frequency;
+ 
+@@ -75,10 +115,10 @@ class SamplingState {
+   }
+ 
+ #if !defined(OS_MACOSX)
+-  ALWAYS_INLINE size_t GetCounter() { return tls_counter_; }
+-  ALWAYS_INLINE void SetCounter(size_t value) { tls_counter_ = value; }
++  ALWAYS_INLINE size_t GetCounter() { return TLSGetValue(tls_key_); }
++  ALWAYS_INLINE void SetCounter(size_t value) { TLSSetValue(tls_key_, value); }
+ 
+-  static thread_local size_t tls_counter_;
++  TLSKey tls_key_ = 0;
+ #else
+   // On macOS, the first use of a thread_local variable on a new thread will
+   // cause a malloc(), causing infinite recursion. Instead, use pthread TLS to
+@@ -101,10 +141,6 @@ class SamplingState {
+   size_t increment_ = 0;
+ };
+ 
+-#if !defined(OS_MACOSX)
+-thread_local size_t SamplingState::tls_counter_ = 0;
+-#endif
+-
+ // By being implemented as a global with inline method definitions, method calls
+ // and member acceses are inlined and as efficient as possible in the
+ // performance-sensitive allocation hot-path.

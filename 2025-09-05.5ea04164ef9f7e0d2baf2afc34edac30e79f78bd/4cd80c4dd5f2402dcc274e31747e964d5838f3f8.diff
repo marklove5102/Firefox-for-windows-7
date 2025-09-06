@@ -1,0 +1,13 @@
+diff --git a/content/browser/devtools/devtools_pipe_handler.cc b/content/browser/devtools/devtools_pipe_handler.cc
+index 60c115b9dfd3a..4be1b974b4a86 100644
+--- a/content/browser/devtools/devtools_pipe_handler.cc
++++ b/content/browser/devtools/devtools_pipe_handler.cc
+@@ -228,7 +228,7 @@ void DevToolsPipeHandler::Shutdown() {
+ #if defined(OS_WIN)
+   HANDLE read_handle = reinterpret_cast<HANDLE>(_get_osfhandle(read_fd_));
+   // Cancel pending synchronous read.
+-  CancelIoEx(read_handle, NULL);
++  CancelIo(read_handle);
+   CloseHandle(read_handle);
+   CloseHandle(reinterpret_cast<HANDLE>(_get_osfhandle(write_fd_)));
+ #else

@@ -1,0 +1,98 @@
+diff --git a/content/browser/gpu/gpu_process_host.cc b/content/browser/gpu/gpu_process_host.cc
+index 8c1824b1f030e..cfe6fab6ba196 100644
+--- a/content/browser/gpu/gpu_process_host.cc
++++ b/content/browser/gpu/gpu_process_host.cc
+@@ -78,6 +78,7 @@
+ #endif
+ 
+ #if defined(OS_WIN)
++#include "base/win/windows_version.h"
+ #include "sandbox/win/src/sandbox_policy.h"
+ #include "sandbox/win/src/window.h"
+ #include "services/service_manager/sandbox/win/sandbox_win.h"
+@@ -259,28 +260,34 @@ class GpuSandboxedProcessLauncherDelegate
+   // backend. Note that the GPU process is connected to the interactive
+   // desktop.
+   bool PreSpawnTarget(sandbox::TargetPolicy* policy) override {
+-    if (UseOpenGLRenderer()) {
+-      // Open GL path.
+-      policy->SetTokenLevel(sandbox::USER_RESTRICTED_SAME_ACCESS,
+-                            sandbox::USER_LIMITED);
+-      service_manager::SandboxWin::SetJobLevel(
+-          cmd_line_, sandbox::JOB_UNPROTECTED, 0, policy);
++    if (base::win::GetVersion() > base::win::VERSION_XP) {
++      if (UseOpenGLRenderer()) {
++        // Open GL path.
++        policy->SetTokenLevel(sandbox::USER_RESTRICTED_SAME_ACCESS,
++                              sandbox::USER_LIMITED);
++        service_manager::SandboxWin::SetJobLevel(
++            cmd_line_, sandbox::JOB_UNPROTECTED, 0, policy);
++      } else {
++        policy->SetTokenLevel(sandbox::USER_RESTRICTED_SAME_ACCESS,
++                              sandbox::USER_LIMITED);
++
++        // UI restrictions break when we access Windows from outside our job.
++        // However, we don't want a proxy window in this process because it can
++        // introduce deadlocks where the renderer blocks on the gpu, which in
++        // turn blocks on the browser UI thread. So, instead we forgo a window
++        // message pump entirely and just add job restrictions to prevent child
++        // processes.
++        service_manager::SandboxWin::SetJobLevel(
++            cmd_line_, sandbox::JOB_LIMITED_USER,
++            JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS | JOB_OBJECT_UILIMIT_DESKTOP |
++                JOB_OBJECT_UILIMIT_EXITWINDOWS |
++                JOB_OBJECT_UILIMIT_DISPLAYSETTINGS,
++            policy);
++      }
+     } else {
+-      policy->SetTokenLevel(sandbox::USER_RESTRICTED_SAME_ACCESS,
++      service_manager::SandboxWin::SetJobLevel(cmd_line_, sandbox::JOB_UNPROTECTED, 0, policy);
++      policy->SetTokenLevel(sandbox::USER_UNPROTECTED,
+                             sandbox::USER_LIMITED);
+-
+-      // UI restrictions break when we access Windows from outside our job.
+-      // However, we don't want a proxy window in this process because it can
+-      // introduce deadlocks where the renderer blocks on the gpu, which in
+-      // turn blocks on the browser UI thread. So, instead we forgo a window
+-      // message pump entirely and just add job restrictions to prevent child
+-      // processes.
+-      service_manager::SandboxWin::SetJobLevel(
+-          cmd_line_, sandbox::JOB_LIMITED_USER,
+-          JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS | JOB_OBJECT_UILIMIT_DESKTOP |
+-              JOB_OBJECT_UILIMIT_EXITWINDOWS |
+-              JOB_OBJECT_UILIMIT_DISPLAYSETTINGS,
+-          policy);
+     }
+ 
+     // Check if we are running on the winlogon desktop and set a delayed
+diff --git a/services/service_manager/sandbox/win/sandbox_win.cc b/services/service_manager/sandbox/win/sandbox_win.cc
+index 54e31d3656965..323e57edae0f5 100644
+--- a/services/service_manager/sandbox/win/sandbox_win.cc
++++ b/services/service_manager/sandbox/win/sandbox_win.cc
+@@ -409,10 +409,22 @@ sandbox::ResultCode AddPolicyForSandboxedProcess(
+   if (result != sandbox::SBOX_ALL_OK)
+     return result;
+ 
+-  // On 2003/Vista+ the initial token has to be restricted if the main
+-  // token is restricted.
+-  result = policy->SetTokenLevel(sandbox::USER_RESTRICTED_SAME_ACCESS,
+-                                 sandbox::USER_LOCKDOWN);
++  // Close the proxy settings on XP.
++  if (base::win::GetVersion() <= base::win::VERSION_SERVER_2003)
++    result = policy->AddKernelObjectToClose(L"Key",
++                 L"HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\" \
++                     L"CurrentVersion\\Internet Settings");
++  if (result != sandbox::SBOX_ALL_OK)
++    return result;
++
++  sandbox::TokenLevel initial_token = sandbox::USER_UNPROTECTED;
++  if (base::win::GetVersion() > base::win::VERSION_XP) {
++    // On 2003/Vista the initial token has to be restricted if the main
++    // token is restricted.
++    initial_token = sandbox::USER_RESTRICTED_SAME_ACCESS;
++  }
++
++  result = policy->SetTokenLevel(initial_token, sandbox::USER_LOCKDOWN);
+   if (result != sandbox::SBOX_ALL_OK)
+     return result;
+   // Prevents the renderers from manipulating low-integrity processes.

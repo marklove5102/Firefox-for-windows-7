@@ -1,0 +1,60 @@
+diff --git a/base/win/win_util.cc b/base/win/win_util.cc
+index 4628713ec2350..9507034e71f87 100644
+--- a/base/win/win_util.cc
++++ b/base/win/win_util.cc
+@@ -436,10 +436,51 @@ bool SetClsidForPropertyStore(IPropertyStore* property_store,
+                               const PROPERTYKEY& property_key,
+                               const CLSID& property_clsid_value) {
+   ScopedPropVariant property_value;
+-  if (FAILED(InitPropVariantFromCLSID(property_clsid_value,
+-                                      property_value.Receive()))) {
+-    return false;
+-  }
++typedef HRESULT (__cdecl *MYPROC)(REFCLSID, PROPVARIANT *);
++
++    HINSTANCE hinstLib;
++    MYPROC pInitPropVariantFromCLSID;
++    BOOL fRunTimeLinkSuccess = FALSE;
++
++    // Get a handle to the DLL module.
++
++    hinstLib = LoadLibraryW(L"Propsys.dll");
++
++    // If the handle is valid, try to get the function address.
++
++    if (hinstLib != NULL)
++    {
++        pInitPropVariantFromCLSID = (MYPROC) GetProcAddress(hinstLib, "InitPropVariantFromCLSID");
++
++        // If the function address is valid, call the function.
++
++        if (NULL != pInitPropVariantFromCLSID)
++        {
++            fRunTimeLinkSuccess = TRUE;
++            if (FAILED(pInitPropVariantFromCLSID(property_clsid_value,
++                                                property_value.Receive()))) {
++              return false;
++            }
++        }
++        // Free the DLL module.
++
++        FreeLibrary(hinstLib);
++    }
++
++    // If unable to call the DLL function, use an alternative.
++    if (! fRunTimeLinkSuccess)
++    {
++        REFCLSID    clsid = property_clsid_value;
++        PROPVARIANT *ppropvar = property_value.Receive();
++        ppropvar->vt = VT_EMPTY;
++        ppropvar->puuid = (GUID*)CoTaskMemAlloc(sizeof(GUID));
++        if( ppropvar->puuid )
++            memset(ppropvar->puuid, 0, sizeof(GUID));
++        else
++            return E_OUTOFMEMORY;
++        ppropvar->vt = VT_CLSID;
++        *(ppropvar->puuid) = clsid;
++    }
+ 
+   return SetPropVariantValueForPropertyStore(property_store, property_key,
+                                              property_value);

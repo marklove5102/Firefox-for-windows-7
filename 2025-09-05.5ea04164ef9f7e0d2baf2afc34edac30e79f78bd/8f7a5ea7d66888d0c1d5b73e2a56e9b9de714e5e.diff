@@ -1,0 +1,57 @@
+diff --git a/chrome/browser/media/router/discovery/discovery_network_list_win.cc b/chrome/browser/media/router/discovery/discovery_network_list_win.cc
+index f1d4a35364b27..3822b180a7933 100644
+--- a/chrome/browser/media/router/discovery/discovery_network_list_win.cc
++++ b/chrome/browser/media/router/discovery/discovery_network_list_win.cc
+@@ -32,9 +32,25 @@ struct GuidOperatorLess {
+ };
+ 
+ void IfTable2Deleter(PMIB_IF_TABLE2 interface_table) {
++  // This is available on Vista+ only.
++  HMODULE library = ::LoadLibraryW(L"Iphlpapi.dll");
++
++  typedef DWORD (NETIOAPI_API_ *GetIfTablePtr)(PMIB_IF_TABLE2*);
++  typedef void (NETIOAPI_API_ *FreeMibTablePtr)(PMIB_IF_TABLE2);
++
++  GetIfTablePtr getIfTable = reinterpret_cast<GetIfTablePtr>(
++      ::GetProcAddress(library, "GetIfTable2"));
++  FreeMibTablePtr freeMibTablePtr = reinterpret_cast<FreeMibTablePtr>(
++      ::GetProcAddress(library, "FreeMibTable"));
++  if (getIfTable == NULL || freeMibTablePtr == NULL) {
++    FreeLibrary(library);
++    return;
++  }
++
+   if (interface_table) {
+-    FreeMibTable(interface_table);
++    freeMibTablePtr(interface_table);
+   }
++  ::FreeLibrary(library);
+ }
+ 
+ typedef DWORD(WINAPI* WlanOpenHandleFunction)(DWORD dwClientVersion,
+@@ -128,8 +144,24 @@ class ScopedWlanClientHandle {
+ // enumerates all network interfaces, not just wireless interfaces.
+ base::small_map<std::map<GUID, std::string, GuidOperatorLess>>
+ GetInterfaceGuidMacMap() {
++  // This is available on Vista+ only.
++  HMODULE library = ::LoadLibraryW(L"Iphlpapi.dll");
++
++  typedef DWORD (NETIOAPI_API_ *GetIfTablePtr)(PMIB_IF_TABLE2*);
++  typedef void (NETIOAPI_API_ *FreeMibTablePtr)(PMIB_IF_TABLE2);
++
++  GetIfTablePtr getIfTable = reinterpret_cast<GetIfTablePtr>(
++      ::GetProcAddress(library, "GetIfTable2"));
++  FreeMibTablePtr freeMibTablePtr = reinterpret_cast<FreeMibTablePtr>(
++      ::GetProcAddress(library, "FreeMibTable"));
++  if (getIfTable == NULL || freeMibTablePtr == NULL) {
++    FreeLibrary(library);
++    return {};
++  }
++
+   PMIB_IF_TABLE2 interface_table_raw = nullptr;
+-  auto result = GetIfTable2(&interface_table_raw);
++  auto result = getIfTable(&interface_table_raw);
++  ::FreeLibrary(library);
+   if (result != ERROR_SUCCESS) {
+     LOG(WARNING) << "GetIfTable2() failed: " << result;
+     return {};

@@ -1,0 +1,128 @@
+diff --git a/third_party/boringssl/src/crypto/internal.h b/third_party/boringssl/src/crypto/internal.h
+index 433072ce4..2d130fc9a 100644
+--- a/third_party/boringssl/src/crypto/internal.h
++++ b/third_party/boringssl/src/crypto/internal.h
+@@ -365,9 +369,10 @@ struct CRYPTO_STATIC_MUTEX {
+ #define CRYPTO_STATIC_MUTEX_INIT { 0 }
+ #elif defined(OPENSSL_WINDOWS_THREADS)
+ struct CRYPTO_STATIC_MUTEX {
+-  SRWLOCK lock;
++  CRYPTO_once_t once;
++  CRITICAL_SECTION lock;
+ };
+-#define CRYPTO_STATIC_MUTEX_INIT { SRWLOCK_INIT }
++#define CRYPTO_STATIC_MUTEX_INIT { CRYPTO_ONCE_INIT, { 0 } }
+ #elif defined(OPENSSL_PTHREADS)
+ struct CRYPTO_STATIC_MUTEX {
+   pthread_rwlock_t lock;
+@@ -380,7 +385,8 @@ struct CRYPTO_STATIC_MUTEX {
+ OPENSSL_EXPORT void CRYPTO_MUTEX_init(CRYPTO_MUTEX *lock);
+ 
+ // CRYPTO_MUTEX_lock_read locks |lock| such that other threads may also have a
+-// read lock, but none may have a write lock.
++// read lock, but none may have a write lock. (On Windows, read locks are
++// actually fully exclusive.)
+ OPENSSL_EXPORT void CRYPTO_MUTEX_lock_read(CRYPTO_MUTEX *lock);
+ 
+ // CRYPTO_MUTEX_lock_write locks |lock| such that no other thread has any type
+diff --git a/third_party/boringssl/src/crypto/thread_win.c b/third_party/boringssl/src/crypto/thread_win.c
+index 9f7d82b32..85e599394 100644
+--- a/third_party/boringssl/src/crypto/thread_win.c
++++ b/third_party/boringssl/src/crypto/thread_win.c
+@@ -27,7 +27,7 @@
+ #include <openssl/type_check.h>
+ 
+ 
+-OPENSSL_STATIC_ASSERT(sizeof(CRYPTO_MUTEX) >= sizeof(SRWLOCK),
++OPENSSL_STATIC_ASSERT(sizeof(CRYPTO_MUTEX) >= sizeof(CRITICAL_SECTION),
+                       "CRYPTO_MUTEX is too small");
+ 
+ static BOOL CALLBACK call_once_init(INIT_ONCE *once, void *arg, void **out) {
+@@ -43,43 +43,60 @@ void CRYPTO_once(CRYPTO_once_t *once, void (*init)(void)) {
+ }
+ 
+ void CRYPTO_MUTEX_init(CRYPTO_MUTEX *lock) {
+-  InitializeSRWLock((SRWLOCK *) lock);
++  if (!InitializeCriticalSectionAndSpinCount((CRITICAL_SECTION *) lock, 0x400)) {
++    abort();
++  }
+ }
+ 
+ void CRYPTO_MUTEX_lock_read(CRYPTO_MUTEX *lock) {
+-  AcquireSRWLockShared((SRWLOCK *) lock);
++  /* Since we have to support Windows XP, read locks are actually exclusive. */
++  EnterCriticalSection((CRITICAL_SECTION *) lock);
+ }
+ 
+ void CRYPTO_MUTEX_lock_write(CRYPTO_MUTEX *lock) {
+-  AcquireSRWLockExclusive((SRWLOCK *) lock);
++  EnterCriticalSection((CRITICAL_SECTION *) lock);
+ }
+ 
+ void CRYPTO_MUTEX_unlock_read(CRYPTO_MUTEX *lock) {
+-  ReleaseSRWLockShared((SRWLOCK *) lock);
++  LeaveCriticalSection((CRITICAL_SECTION *) lock);
+ }
+ 
+ void CRYPTO_MUTEX_unlock_write(CRYPTO_MUTEX *lock) {
+-  ReleaseSRWLockExclusive((SRWLOCK *) lock);
++  LeaveCriticalSection((CRITICAL_SECTION *) lock);
+ }
+ 
+ void CRYPTO_MUTEX_cleanup(CRYPTO_MUTEX *lock) {
+-  // SRWLOCKs require no cleanup.
++  DeleteCriticalSection((CRITICAL_SECTION *) lock);
++}
++
++static BOOL CALLBACK static_lock_init(INIT_ONCE *once, void *arg, void **out) {
++  struct CRYPTO_STATIC_MUTEX *lock = arg;
++  if (!InitializeCriticalSectionAndSpinCount(&lock->lock, 0x400)) {
++    abort();
++  }
++  return TRUE;
+ }
+ 
+ void CRYPTO_STATIC_MUTEX_lock_read(struct CRYPTO_STATIC_MUTEX *lock) {
+-  AcquireSRWLockShared(&lock->lock);
++  /* TODO(davidben): Consider replacing these with SRWLOCK now that we no longer
++   * need to support Windows XP. Currently, read locks are actually
++   * exclusive. */
++  if (!InitOnceExecuteOnce(&lock->once, static_lock_init, lock, NULL)) {
++    abort();
++  }
++  EnterCriticalSection(&lock->lock);
+ }
+ 
+ void CRYPTO_STATIC_MUTEX_lock_write(struct CRYPTO_STATIC_MUTEX *lock) {
+-  AcquireSRWLockExclusive(&lock->lock);
++  CRYPTO_STATIC_MUTEX_lock_read(lock);
+ }
+ 
+ void CRYPTO_STATIC_MUTEX_unlock_read(struct CRYPTO_STATIC_MUTEX *lock) {
+-  ReleaseSRWLockShared(&lock->lock);
++  LeaveCriticalSection(&lock->lock);
+ }
+ 
+ void CRYPTO_STATIC_MUTEX_unlock_write(struct CRYPTO_STATIC_MUTEX *lock) {
+-  ReleaseSRWLockExclusive(&lock->lock);
++  LeaveCriticalSection(&lock->lock);
+ }
+ 
+ static CRITICAL_SECTION g_destructors_lock;
+diff --git a/third_party/boringssl/src/include/openssl/thread.h b/third_party/boringssl/src/include/openssl/thread.h
+index 02539e81e..ac4ced071 100644
+--- a/third_party/boringssl/src/include/openssl/thread.h
++++ b/third_party/boringssl/src/include/openssl/thread.h
+@@ -73,9 +73,10 @@ typedef struct crypto_mutex_st {
+ #elif defined(OPENSSL_WINDOWS)
+ // CRYPTO_MUTEX can appear in public header files so we really don't want to
+ // pull in windows.h. It's statically asserted that this structure is large
+-// enough to contain a Windows SRWLOCK by thread_win.c.
++// enough to contain a Windows CRITICAL_SECTION by thread_win.c.
+ typedef union crypto_mutex_st {
+-  void *handle;
++  double alignment;
++  uint8_t padding[4*sizeof(void*) + 2*sizeof(int)];
+ } CRYPTO_MUTEX;
+ #elif defined(__MACH__) && defined(__APPLE__)
+ typedef pthread_rwlock_t CRYPTO_MUTEX;

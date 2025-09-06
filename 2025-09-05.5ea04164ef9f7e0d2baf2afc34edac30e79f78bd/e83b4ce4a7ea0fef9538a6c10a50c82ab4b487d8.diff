@@ -1,0 +1,552 @@
+diff --git a/sandbox/win/BUILD.gn b/sandbox/win/BUILD.gn
+index 49d1ece..13e3cae 100644
+--- a/sandbox/win/BUILD.gn
++++ b/sandbox/win/BUILD.gn
+@@ -12,6 +12,8 @@ static_library("sandbox") {
+   sources = [
+     "src/acl.cc",
+     "src/acl.h",
++    "src/app_container.cc",
++    "src/app_container.h",
+     "src/app_container_profile.h",
+     "src/app_container_profile_base.cc",
+     "src/app_container_profile_base.h",
+diff --git a/sandbox/win/src/app_container.cc b/sandbox/win/src/app_container.cc
+new file mode 100644
+index 0000000..78d949c
+--- /dev/null
++++ b/sandbox/win/src/app_container.cc
+@@ -0,0 +1,183 @@
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "sandbox/win/src/app_container.h"
++
++#include <Sddl.h>
++#include <stddef.h>
++#include <vector>
++
++#include "base/logging.h"
++#include "base/win/startup_information.h"
++#include "sandbox/win/src/internal_types.h"
++
++namespace {
++
++// Converts the passed in sid string to a PSID that must be relased with
++// LocalFree.
++PSID ConvertSid(const base::string16& sid) {
++  PSID local_sid;
++  if (!ConvertStringSidToSid(sid.c_str(), &local_sid))
++    return NULL;
++  return local_sid;
++}
++
++template <typename T>
++T BindFunction(const char* name) {
++  HMODULE module = GetModuleHandle(sandbox::kKerneldllName);
++  FARPROC function = GetProcAddress(module, name);
++  if (!function) {
++    module = GetModuleHandle(sandbox::kKernelBasedllName);
++    function = GetProcAddress(module, name);
++  }
++  return reinterpret_cast<T>(function);
++}
++
++}  // namespace
++
++namespace sandbox {
++
++AppContainerAttributes::AppContainerAttributes() {
++  memset(&capabilities_, 0, sizeof(capabilities_));
++}
++
++AppContainerAttributes::~AppContainerAttributes() {
++  for (size_t i = 0; i < attributes_.size(); i++)
++    LocalFree(attributes_[i].Sid);
++  LocalFree(capabilities_.AppContainerSid);
++}
++
++ResultCode AppContainerAttributes::SetAppContainer(
++    const base::string16& app_container_sid,
++    const std::vector<base::string16>& capabilities) {
++  DCHECK(!capabilities_.AppContainerSid);
++  DCHECK(attributes_.empty());
++  capabilities_.AppContainerSid = ConvertSid(app_container_sid);
++  if (!capabilities_.AppContainerSid)
++    return SBOX_ERROR_INVALID_APP_CONTAINER;
++
++  for (size_t i = 0; i < capabilities.size(); i++)  {
++    SID_AND_ATTRIBUTES sid_and_attributes;
++    sid_and_attributes.Sid = ConvertSid(capabilities[i]);
++    if (!sid_and_attributes.Sid)
++      return SBOX_ERROR_INVALID_CAPABILITY;
++
++    sid_and_attributes.Attributes = SE_GROUP_ENABLED;
++    attributes_.push_back(sid_and_attributes);
++  }
++
++  if (capabilities.size()) {
++    capabilities_.CapabilityCount = static_cast<DWORD>(capabilities.size());
++    capabilities_.Capabilities = &attributes_[0];
++  }
++  return SBOX_ALL_OK;
++}
++
++ResultCode AppContainerAttributes::ShareForStartup(
++      base::win::StartupInformation* startup_information) const {
++  // The only thing we support so far is an AppContainer.
++  if (!capabilities_.AppContainerSid)
++    return SBOX_ERROR_INVALID_APP_CONTAINER;
++
++  if (!startup_information->UpdateProcThreadAttribute(
++           PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
++           const_cast<SECURITY_CAPABILITIES*>(&capabilities_),
++           sizeof(capabilities_)))  {
++    DPLOG(ERROR) << "Failed UpdateProcThreadAttribute";
++    return SBOX_ERROR_CANNOT_INIT_APPCONTAINER;
++  }
++  return SBOX_ALL_OK;
++}
++
++bool AppContainerAttributes::HasAppContainer() const {
++  return (capabilities_.AppContainerSid != NULL);
++}
++
++ResultCode CreateAppContainer(const base::string16& sid,
++                              const base::string16& name) {
++  PSID local_sid;
++  if (!ConvertStringSidToSid(sid.c_str(), &local_sid))
++    return SBOX_ERROR_INVALID_APP_CONTAINER;
++
++  typedef HRESULT (WINAPI* AppContainerRegisterSidPtr)(PSID sid,
++                                                       LPCWSTR moniker,
++                                                       LPCWSTR display_name);
++  static AppContainerRegisterSidPtr AppContainerRegisterSid = NULL;
++
++  if (!AppContainerRegisterSid) {
++    AppContainerRegisterSid =
++        BindFunction<AppContainerRegisterSidPtr>("AppContainerRegisterSid");
++  }
++
++  ResultCode operation_result = SBOX_ERROR_GENERIC;
++  if (AppContainerRegisterSid) {
++    HRESULT rv = AppContainerRegisterSid(local_sid, name.c_str(), name.c_str());
++    if (SUCCEEDED(rv))
++      operation_result = SBOX_ALL_OK;
++    else
++      DLOG(ERROR) << "AppContainerRegisterSid error:" << std::hex << rv;
++  }
++  LocalFree(local_sid);
++  return operation_result;
++}
++
++ResultCode DeleteAppContainer(const base::string16& sid) {
++  PSID local_sid;
++  if (!ConvertStringSidToSid(sid.c_str(), &local_sid))
++    return SBOX_ERROR_INVALID_APP_CONTAINER;
++
++  typedef HRESULT (WINAPI* AppContainerUnregisterSidPtr)(PSID sid);
++  static AppContainerUnregisterSidPtr AppContainerUnregisterSid = NULL;
++
++  if (!AppContainerUnregisterSid) {
++    AppContainerUnregisterSid =
++        BindFunction<AppContainerUnregisterSidPtr>("AppContainerUnregisterSid");
++  }
++
++  ResultCode operation_result = SBOX_ERROR_GENERIC;
++  if (AppContainerUnregisterSid) {
++    HRESULT rv = AppContainerUnregisterSid(local_sid);
++    if (SUCCEEDED(rv))
++      operation_result = SBOX_ALL_OK;
++    else
++      DLOG(ERROR) << "AppContainerUnregisterSid error:" << std::hex << rv;
++  }
++  LocalFree(local_sid);
++  return operation_result;
++}
++
++base::string16 LookupAppContainer(const base::string16& sid) {
++  PSID local_sid;
++  if (!ConvertStringSidToSid(sid.c_str(), &local_sid))
++    return base::string16();
++
++  typedef HRESULT (WINAPI* AppContainerLookupMonikerPtr)(PSID sid,
++                                                         LPWSTR* moniker);
++  typedef BOOLEAN (WINAPI* AppContainerFreeMemoryPtr)(void* ptr);
++
++  static AppContainerLookupMonikerPtr AppContainerLookupMoniker = NULL;
++  static AppContainerFreeMemoryPtr AppContainerFreeMemory = NULL;
++
++  if (!AppContainerLookupMoniker || !AppContainerFreeMemory) {
++    AppContainerLookupMoniker =
++        BindFunction<AppContainerLookupMonikerPtr>("AppContainerLookupMoniker");
++    AppContainerFreeMemory =
++        BindFunction<AppContainerFreeMemoryPtr>("AppContainerFreeMemory");
++  }
++
++  if (!AppContainerLookupMoniker || !AppContainerFreeMemory)
++    return base::string16();
++
++  wchar_t* buffer = NULL;
++  HRESULT rv = AppContainerLookupMoniker(local_sid, &buffer);
++  if (FAILED(rv))
++    return base::string16();
++
++  base::string16 name(buffer);
++  if (!AppContainerFreeMemory(buffer))
++    NOTREACHED();
++  return name;
++}
++
++}  // namespace sandbox
+diff --git a/sandbox/win/src/app_container.h b/sandbox/win/src/app_container.h
+new file mode 100644
+index 0000000..e61cba6
+--- /dev/null
++++ b/sandbox/win/src/app_container.h
+@@ -0,0 +1,69 @@
++// Copyright (c) 2012 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef SANDBOX_WIN_SRC_APP_CONTAINER_H_
++#define SANDBOX_WIN_SRC_APP_CONTAINER_H_
++
++#include <windows.h>
++
++#include <vector>
++
++#include "base/macros.h"
++#include "base/strings/string16.h"
++#include "sandbox/win/src/sandbox_types.h"
++
++namespace base {
++namespace win {
++class StartupInformation;
++}
++}
++
++namespace sandbox {
++
++// Maintains an attribute list to be used during creation of a new sandboxed
++// process.
++class AppContainerAttributes {
++ public:
++  AppContainerAttributes();
++  ~AppContainerAttributes();
++
++  // Sets the AppContainer and capabilities to be used with the new process.
++  ResultCode SetAppContainer(const base::string16& app_container_sid,
++                             const std::vector<base::string16>& capabilities);
++
++  // Updates the proc_thred attribute list of the provided startup_information
++  // with the app container related data.
++  // WARNING: startup_information just points back to our internal memory, so
++  // the lifetime of this object has to be greater than the lifetime of the
++  // provided startup_information.
++  ResultCode ShareForStartup(
++      base::win::StartupInformation* startup_information) const;
++
++  bool HasAppContainer() const;
++
++ private:
++  SECURITY_CAPABILITIES capabilities_;
++  std::vector<SID_AND_ATTRIBUTES> attributes_;
++
++  DISALLOW_COPY_AND_ASSIGN(AppContainerAttributes);
++};
++
++// Creates a new AppContainer on the system. |sid| is the identifier of the new
++// AppContainer, and |name| will be used as both the display name and moniker.
++// This function fails if the OS doesn't support AppContainers, or if there is
++// an AppContainer registered with the same id.
++ResultCode CreateAppContainer(const base::string16& sid,
++                              const base::string16& name);
++
++// Deletes an AppContainer previously created with a successful call to
++// CreateAppContainer.
++ResultCode DeleteAppContainer(const base::string16& sid);
++
++// Retrieves the name associated with the provided AppContainer sid. Returns an
++// empty string if the AppContainer is not registered with the system.
++base::string16 LookupAppContainer(const base::string16& sid);
++
++}  // namespace sandbox
++
++#endif  // SANDBOX_WIN_SRC_APP_CONTAINER_H_
+diff --git a/sandbox/win/src/broker_services.cc b/sandbox/win/src/broker_services.cc
+index 32b11f8..838d494 100644
+--- a/sandbox/win/src/broker_services.cc
++++ b/sandbox/win/src/broker_services.cc
+@@ -18,6 +18,7 @@
+ #include "base/win/scoped_process_information.h"
+ #include "base/win/startup_information.h"
+ #include "base/win/windows_version.h"
++#include "sandbox/win/src/app_container.h"
+ #include "sandbox/win/src/app_container_profile.h"
+ #include "sandbox/win/src/process_mitigations.h"
+ #include "sandbox/win/src/sandbox.h"
+@@ -327,6 +328,9 @@ ResultCode BrokerServicesBase::SpawnTarget(const wchar_t* exe_path,
+   // This downcast is safe as long as we control CreatePolicy()
+   scoped_refptr<PolicyBase> policy_base(static_cast<PolicyBase*>(policy.get()));
+ 
++  if (policy_base->GetAppContainer() && policy_base->GetLowBoxSid())
++    return SBOX_ERROR_BAD_PARAMS;
++
+   // Construct the tokens and the job object that we are going to associate
+   // with the soon to be created target process.
+   base::win::ScopedHandle initial_token;
+@@ -364,6 +368,10 @@ ResultCode BrokerServicesBase::SpawnTarget(const wchar_t* exe_path,
+   bool inherit_handles = false;
+ 
+   int attribute_count = 0;
++  const AppContainerAttributes* app_container =
++      policy_base->GetAppContainer();
++  if (app_container)
++    ++attribute_count;
+ 
+   size_t mitigations_size;
+   ConvertProcessMitigationsToPolicy(policy_base->GetProcessMitigations(),
+@@ -400,6 +408,12 @@ ResultCode BrokerServicesBase::SpawnTarget(const wchar_t* exe_path,
+   if (!startup_info.InitializeProcThreadAttributeList(attribute_count))
+     return SBOX_ERROR_PROC_THREAD_ATTRIBUTES;
+ 
++  if (app_container) {
++    result = app_container->ShareForStartup(&startup_info);
++    if (SBOX_ALL_OK != result)
++      return result;
++  }
++
+   if (mitigations[0] || mitigations[1]) {
+     if (!startup_info.UpdateProcThreadAttribute(
+             PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &mitigations[0],
+@@ -541,4 +555,30 @@ ResultCode BrokerServicesBase::AddTargetPeer(HANDLE peer_process) {
+   return child_process_ids_.find(process_id) != child_process_ids_.end();
+ }
+ 
++ResultCode BrokerServicesBase::InstallAppContainer(const wchar_t* sid,
++                                                   const wchar_t* name) {
++  if (base::win::OSInfo::GetInstance()->version() < base::win::VERSION_WIN8)
++    return SBOX_ERROR_UNSUPPORTED;
++
++  base::string16 old_name = LookupAppContainer(sid);
++  if (old_name.empty())
++    return CreateAppContainer(sid, name);
++
++  if (old_name != name)
++    return SBOX_ERROR_INVALID_APP_CONTAINER;
++
++  return SBOX_ALL_OK;
++}
++
++ResultCode BrokerServicesBase::UninstallAppContainer(const wchar_t* sid) {
++  if (base::win::OSInfo::GetInstance()->version() < base::win::VERSION_WIN8)
++    return SBOX_ERROR_UNSUPPORTED;
++
++  base::string16 name = LookupAppContainer(sid);
++  if (name.empty())
++    return SBOX_ERROR_INVALID_APP_CONTAINER;
++
++  return DeleteAppContainer(sid);
++}
++
+ }  // namespace sandbox
+diff --git a/sandbox/win/src/broker_services.h b/sandbox/win/src/broker_services.h
+index a102ce9..6c8f523 100644
+--- a/sandbox/win/src/broker_services.h
++++ b/sandbox/win/src/broker_services.h
+@@ -53,6 +53,9 @@ class BrokerServicesBase final : public BrokerServices,
+                          DWORD* last_error,
+                          PROCESS_INFORMATION* target) override;
+   ResultCode WaitForAllTargets() override;
++  ResultCode InstallAppContainer(const wchar_t* sid,
++                                 const wchar_t* name) override;
++  ResultCode UninstallAppContainer(const wchar_t* sid) override;
+ 
+   // Checks if the supplied process ID matches one of the broker's active
+   // target processes
+diff --git a/sandbox/win/src/sandbox.h b/sandbox/win/src/sandbox.h
+index 915a697..193605d 100644
+--- a/sandbox/win/src/sandbox.h
++++ b/sandbox/win/src/sandbox.h
+@@ -91,6 +91,15 @@ class BrokerServices {
+   //   If the return is ERROR_GENERIC, you can call ::GetLastError() to get
+   //   more information.
+   virtual ResultCode WaitForAllTargets() = 0;
++
++  // Install the AppContainer with the specified sid an name. Returns ALL_OK if
++  // successful or an error code if the AppContainer cannot be installed.
++  virtual ResultCode InstallAppContainer(const wchar_t* sid,
++                                         const wchar_t* name) = 0;
++
++  // Removes from the system the AppContainer with the specified sid.
++  // Returns ALL_OK if successful or an error code otherwise.
++  virtual ResultCode UninstallAppContainer(const wchar_t* sid) = 0;
+ 
+  protected:
+   ~BrokerServices() {}
+diff --git a/sandbox/win/src/sandbox_policy.h b/sandbox/win/src/sandbox_policy.h
+index 3dec071..edac55ec 100644
+--- a/sandbox/win/src/sandbox_policy.h
++++ b/sandbox/win/src/sandbox_policy.h
+@@ -173,6 +173,19 @@ class TargetPolicy {
+   // than the current level, the sandbox will fail to start.
+   virtual ResultCode SetDelayedIntegrityLevel(IntegrityLevel level) = 0;
+ 
++#if 0 // DEAD
++  // Sets the AppContainer to be used for the sandboxed process. Any capability
++  // to be enabled for the process should be added before this method is invoked
++  // (by calling SetCapability() as many times as needed).
++  // The desired AppContainer must be already installed on the system, otherwise
++  // launching the sandboxed process will fail. See BrokerServices for details
++  // about installing an AppContainer.
++  // Note that currently Windows restricts the use of impersonation within
++  // AppContainers, so this function is incompatible with the use of an initial
++  // token.
++  virtual ResultCode SetAppContainer(const wchar_t* sid) = 0;
++#endif // DEAD
++
+   // Sets the LowBox token for sandboxed process. This is mutually exclusive
+   // with SetAppContainer method.
+   virtual ResultCode SetLowBox(const wchar_t* sid) = 0;
+diff --git a/sandbox/win/src/sandbox_policy_base.cc b/sandbox/win/src/sandbox_policy_base.cc
+index 98cbff6..a3af98d 100644
+--- a/sandbox/win/src/sandbox_policy_base.cc
++++ b/sandbox/win/src/sandbox_policy_base.cc
+@@ -14,6 +14,7 @@
+ #include "base/stl_util.h"
+ #include "base/strings/stringprintf.h"
+ #include "base/win/windows_version.h"
++#include "sandbox/win/src/app_container.h"
+ #include "sandbox/win/src/filesystem_policy.h"
+ #include "sandbox/win/src/interception.h"
+ #include "sandbox/win/src/job.h"
+@@ -311,11 +312,42 @@ ResultCode PolicyBase::SetDelayedIntegrityLevel(
+   return SBOX_ALL_OK;
+ }
+ 
++#if 0 // DEAD
++ResultCode PolicyBase::SetAppContainer(const wchar_t* sid) {
++  if (base::win::OSInfo::GetInstance()->version() < base::win::VERSION_WIN8)
++    return SBOX_ALL_OK;
++
++  // SetLowBox and SetAppContainer are mutually exclusive.
++  if (lowbox_sid_)
++    return SBOX_ERROR_UNSUPPORTED;
++
++  // Windows refuses to work with an impersonation token for a process inside
++  // an AppContainer. If the caller wants to use a more privileged initial
++  // token, or if the lockdown level will prevent the process from starting,
++  // we have to fail the operation.
++  if (lockdown_level_ < USER_LIMITED || lockdown_level_ != initial_level_)
++    return SBOX_ERROR_CANNOT_INIT_APPCONTAINER;
++
++  DCHECK(!appcontainer_list_.get());
++  appcontainer_list_.reset(new AppContainerAttributes);
++  ResultCode rv = appcontainer_list_->SetAppContainer(sid, capabilities_);
++  if (rv != SBOX_ALL_OK)
++    return rv;
++
++  return SBOX_ALL_OK;
++}
++
++#endif // DEAD
+ ResultCode PolicyBase::SetLowBox(const wchar_t* sid) {
+   if (base::win::GetVersion() < base::win::VERSION_WIN8)
+     return SBOX_ERROR_UNSUPPORTED;
+ 
++  // SetLowBox and SetAppContainer are mutually exclusive.
++  if (appcontainer_list_.get())
++    return SBOX_ERROR_UNSUPPORTED;
++
+   DCHECK(sid);
++
+   if (lowbox_sid_ || app_container_profile_)
+     return SBOX_ERROR_BAD_PARAMS;
+ 
+@@ -432,6 +462,11 @@ ResultCode PolicyBase::MakeJobObject(base::win::ScopedHandle* job) {
+ ResultCode PolicyBase::MakeTokens(base::win::ScopedHandle* initial,
+                                   base::win::ScopedHandle* lockdown,
+                                   base::win::ScopedHandle* lowbox) {
++  if (appcontainer_list_.get() && appcontainer_list_->HasAppContainer() &&
++      lowbox_sid_) {
++    return SBOX_ERROR_BAD_PARAMS;
++  }
++
+   // Create the 'naked' token. This will be the permanent token associated
+   // with the process and therefore with any thread that is not impersonating.
+   DWORD result =
+@@ -460,6 +495,19 @@ ResultCode PolicyBase::MakeTokens(base::win::ScopedHandle* initial,
+     }
+   }
+ 
++  // We are maintaining two mutually exclusive approaches. One is to start an
++  // AppContainer process through StartupInfoEx and other is replacing
++  // existing token with LowBox token after process creation.
++  if (appcontainer_list_.get() && appcontainer_list_->HasAppContainer()) {
++    // Windows refuses to work with an impersonation token. See SetAppContainer
++    // implementation for more details.
++    if (lockdown_level_ < USER_LIMITED || lockdown_level_ != initial_level_)
++      return SBOX_ERROR_CANNOT_INIT_APPCONTAINER;
++
++    *initial = base::win::ScopedHandle();
++    return SBOX_ALL_OK;
++  }
++
+   if (lowbox_sid_) {
+     if (!lowbox_directory_.IsValid()) {
+       result =
+@@ -499,6 +547,13 @@ ResultCode PolicyBase::MakeTokens(base::win::ScopedHandle* initial,
+   return SBOX_ALL_OK;
+ }
+ 
++const AppContainerAttributes* PolicyBase::GetAppContainer() const {
++  if (!appcontainer_list_.get() || !appcontainer_list_->HasAppContainer())
++    return NULL;
++
++  return appcontainer_list_.get();
++}
++
+ PSID PolicyBase::GetLowBoxSid() const {
+   return lowbox_sid_;
+ }
+diff --git a/sandbox/win/src/sandbox_policy_base.h b/sandbox/win/src/sandbox_policy_base.h
+index 22004be..a2704a0 100644
+--- a/sandbox/win/src/sandbox_policy_base.h
++++ b/sandbox/win/src/sandbox_policy_base.h
+@@ -28,6 +28,7 @@
+ 
+ namespace sandbox {
+ 
++class AppContainerAttributes;
+ class LowLevelPolicy;
+ class TargetProcess;
+ struct PolicyGlobal;
+@@ -52,6 +53,9 @@ class PolicyBase final : public TargetPolicy {
+   ResultCode SetIntegrityLevel(IntegrityLevel integrity_level) override;
+   IntegrityLevel GetIntegrityLevel() const override;
+   ResultCode SetDelayedIntegrityLevel(IntegrityLevel integrity_level) override;
++#if 0 // DEAD
++  ResultCode SetAppContainer(const wchar_t* sid) override;
++#endif // DEAD
+   ResultCode SetLowBox(const wchar_t* sid) override;
+   ResultCode SetProcessMitigations(MitigationFlags flags) override;
+   MitigationFlags GetProcessMitigations() override;
+@@ -82,6 +84,8 @@ class PolicyBase final : public TargetPolicy {
+                         base::win::ScopedHandle* lockdown,
+                         base::win::ScopedHandle* lowbox);
+ 
++  const AppContainerAttributes* GetAppContainer() const;
++
+   PSID GetLowBoxSid() const;
+ 
+   // Adds a target process to the internal list of targets. Internally a
+@@ -151,6 +155,7 @@ class PolicyBase final : public TargetPolicy {
+   // target process. A null set means we need to close all handles of the
+   // given type.
+   HandleCloser handle_closer_;
++  std::unique_ptr<AppContainerAttributes> appcontainer_list_;
+   PSID lowbox_sid_;
+   base::win::ScopedHandle lowbox_directory_;
+   std::unique_ptr<Dispatcher> dispatcher_;

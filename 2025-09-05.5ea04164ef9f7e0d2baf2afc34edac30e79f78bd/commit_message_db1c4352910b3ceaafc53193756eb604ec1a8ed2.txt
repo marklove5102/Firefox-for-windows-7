@@ -1,0 +1,3 @@
+[base] Use Win32 native condition variable    2017/5/31 23:00:37    db1c4352910b3ceaafc53193756eb604ec1a8ed2
+[base] Migrate Mutex from CRITICAL_SECTION to SRWLOCK    2017/6/1 19:12:38    8ce8b7f02264873346f8a6ca0be5b6492dd4e7c4
+[wasm] Use shared mutex for background compile token    2019/2/20 19:27:54    2664a259a96c10b4ed711351edee9e6a307912b4

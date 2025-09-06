@@ -1,0 +1,128 @@
+diff --git a/components/browser_watcher/watcher_client_win_unittest.cc b/components/browser_watcher/watcher_client_win_unittest.cc
+index ae9323df18e0a..9d1aac6fe88f5 100644
+--- a/components/browser_watcher/watcher_client_win_unittest.cc
++++ b/components/browser_watcher/watcher_client_win_unittest.cc
+@@ -20,6 +20,7 @@
+ #include "base/test/multiprocess_test.h"
+ #include "base/test/test_reg_util_win.h"
+ #include "base/win/scoped_handle.h"
++#include "base/win/windows_version.h"
+ #include "components/browser_watcher/exit_code_watcher_win.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ #include "testing/multiprocess_func_list.h"
+@@ -28,8 +29,10 @@ namespace browser_watcher {
+ 
+ namespace {
+ 
+-// Command line switch used to communiate to the child test.
++// Command line switches used to communiate to the child test.
+ const char kParentHandle[] = "parent-handle";
++const char kLeakHandle[] = "leak-handle";
++const char kNoLeakHandle[] = "no-leak-handle";
+ 
+ bool IsValidParentProcessHandle(base::CommandLine& cmd_line,
+                                 const char* switch_name) {
+@@ -75,6 +78,23 @@ MULTIPROCESS_TEST_MAIN(VerifyParentHandle) {
+     return 1;
+   }
+ 
++  // If in the legacy mode, we expect this second handle will leak into the
++  // child process. This mainly serves to verify that the legacy mode is
++  // getting tested.
++  if (cmd_line->HasSwitch(kLeakHandle) &&
++      !IsValidParentProcessHandle(*cmd_line, kLeakHandle)) {
++    LOG(ERROR) << "Parent process handle unexpectedly didn't leak.";
++    return 1;
++  }
++
++  // If not in the legacy mode, this second handle should not leak into the
++  // child process.
++  if (cmd_line->HasSwitch(kNoLeakHandle) &&
++      IsValidParentProcessHandle(*cmd_line, kLeakHandle)) {
++    LOG(ERROR) << "Parent process handle unexpectedly leaked.";
++    return 1;
++  }
++
+   return 0;
+ }
+ 
+@@ -89,19 +109,39 @@ class WatcherClientTest : public base::MultiProcessTest {
+     ASSERT_TRUE(self_.IsValid());
+   }
+ 
++  enum HandlePolicy {
++    LEAK_HANDLE,
++    NO_LEAK_HANDLE
++  };
++
+   // Get a base command line to launch back into this test fixture.
+-  base::CommandLine GetBaseCommandLine(HANDLE parent_handle) {
++  base::CommandLine GetBaseCommandLine(HandlePolicy handle_policy,
++                                       HANDLE parent_handle) {
+     base::CommandLine ret = base::GetMultiProcessTestChildBaseCommandLine();
+ 
+     ret.AppendSwitchASCII(switches::kTestChildProcess, "VerifyParentHandle");
+     ret.AppendSwitchASCII(kParentHandle, HandleToString(parent_handle));
+ 
++    switch (handle_policy) {
++      case LEAK_HANDLE:
++        ret.AppendSwitchASCII(kLeakHandle, HandleToString(self_.Get()));
++        break;
++
++      case NO_LEAK_HANDLE:
++        ret.AppendSwitchASCII(kNoLeakHandle, HandleToString(self_.Get()));
++        break;
++
++      default:
++        ADD_FAILURE() << "Impossible handle_policy";
++    }
++
+     return ret;
+   }
+ 
+-  WatcherClient::CommandLineGenerator GetBaseCommandLineGenerator() {
++  WatcherClient::CommandLineGenerator GetBaseCommandLineGenerator(
++      HandlePolicy handle_policy) {
+     return base::Bind(&WatcherClientTest::GetBaseCommandLine,
+-                      base::Unretained(this));
++                      base::Unretained(this), handle_policy);
+   }
+ 
+   void AssertSuccessfulExitCode(base::Process process) {
+@@ -121,7 +161,7 @@ class WatcherClientTest : public base::MultiProcessTest {
+ // TODO(siggi): More testing - test WatcherClient base implementation.
+ 
+ TEST_F(WatcherClientTest, LaunchWatcherSucceeds) {
+-  WatcherClient client(GetBaseCommandLineGenerator());
++  WatcherClient client(GetBaseCommandLineGenerator(NO_LEAK_HANDLE));
+ 
+   client.LaunchWatcher();
+ 
+diff --git a/components/nacl/browser/pnacl_translation_cache_unittest.cc b/components/nacl/browser/pnacl_translation_cache_unittest.cc
+index 18be5f11f149e..057ef96ee1a65 100644
+--- a/components/nacl/browser/pnacl_translation_cache_unittest.cc
++++ b/components/nacl/browser/pnacl_translation_cache_unittest.cc
+@@ -16,6 +16,11 @@
+ #include "net/base/test_completion_callback.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ 
++// For fine-grained suppression on flaky tests.
++#if defined(OS_WIN)
++#include "base/win/windows_version.h"
++#endif
++
+ using content::BrowserThread;
+ using base::FilePath;
+ 
+@@ -255,6 +260,11 @@ TEST_F(PnaclTranslationCacheTest, GetOneOnDisk) {
+ }
+ 
+ TEST_F(PnaclTranslationCacheTest, GetLargeOnDisk) {
++#if defined(OS_WIN)
++  // Flaky on XP bot http://crbug.com/468741
++  if (base::win::GetVersion() <= base::win::VERSION_XP)
++    return;
++#endif
+   InitBackend(false);
+   const std::string large_buffer(kLargeNexeSize, 'a');
+   StoreNexe(test_key, large_buffer);

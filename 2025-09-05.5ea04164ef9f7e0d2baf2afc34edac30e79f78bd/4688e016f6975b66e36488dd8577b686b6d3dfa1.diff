@@ -1,0 +1,399 @@
+diff --git a/chrome/browser/importer/ie_importer_browsertest_win.cc b/chrome/browser/importer/ie_importer_browsertest_win.cc
+index 508e8a33d3c87..950381efb2cf0 100644
+--- a/chrome/browser/importer/ie_importer_browsertest_win.cc
++++ b/chrome/browser/importer/ie_importer_browsertest_win.cc
+@@ -43,7 +43,9 @@
+ #include "chrome/common/importer/importer_test_registry_overrider_win.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+ #include "chrome/test/base/testing_profile.h"
++#include "components/autofill/core/common/password_form.h"
+ #include "components/favicon_base/favicon_usage_data.h"
++#include "components/os_crypt/ie7_password_win.h"
+ #include "components/search_engines/template_url.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ 
+@@ -220,13 +222,21 @@ bool CreateUrlFile(const base::FilePath& file, const base::string16& url) {
+ class TestObserver : public ProfileWriter,
+                      public importer::ImporterProgressObserver {
+  public:
+-  explicit TestObserver(uint16_t importer_items)
++  enum TestIEVersion {
++    IE6,
++    IE7,
++  };
++
++  explicit TestObserver(uint16_t importer_items, TestIEVersion ie_version)
+       : ProfileWriter(NULL),
+         bookmark_count_(0),
+         history_count_(0),
++        password_count_(0),
+         favicon_count_(0),
+         homepage_count_(0),
+-        importer_items_(importer_items) {}
++        ie7_password_count_(0),
++        importer_items_(importer_items),
++        ie_version_(ie_version) {}
+ 
+   // importer::ImporterProgressObserver:
+   void ImportStarted() override {}
+@@ -242,6 +252,11 @@ class TestObserver : public ProfileWriter,
+       EXPECT_EQ(2u, history_count_);
+     if (importer_items_ & importer::HOME_PAGE)
+       EXPECT_EQ(1u, homepage_count_);
++    if ((importer_items_ & importer::PASSWORDS) && (ie_version_ == IE7))
++      EXPECT_EQ(1u, ie7_password_count_);
++    // We need to test the IE6 password importer code.
++    // https://crbug.com/257100
++    // EXPECT_EQ(1, password_count_);
+   }
+ 
+   // ProfileWriter:
+@@ -254,6 +269,18 @@ class TestObserver : public ProfileWriter,
+     return true;
+   }
+ 
++  void AddPasswordForm(const autofill::PasswordForm& form) override {
++    // Importer should obtain this password form only.
++    EXPECT_EQ(GURL("http://localhost:8080/security/index.htm"), form.origin);
++    EXPECT_EQ("http://localhost:8080/", form.signon_realm);
++    EXPECT_EQ(L"user", form.username_element);
++    EXPECT_EQ(L"1", form.username_value);
++    EXPECT_EQ(L"", form.password_element);
++    EXPECT_EQ(L"2", form.password_value);
++    EXPECT_EQ("", form.action.spec());
++    ++password_count_;
++  }
++
+   void AddHistoryPage(const history::URLRows& page,
+                       history::VisitSource visit_source) override {
+     bool cache_item_found = false;
+@@ -315,6 +342,16 @@ class TestObserver : public ProfileWriter,
+     favicon_count_ += usage.size();
+   }
+ 
++  void AddIE7PasswordInfo(const IE7PasswordInfo& info) override {
++    // This function also gets called for the IEImporter test. Ignore.
++    if (ie_version_ == IE7) {
++      EXPECT_EQ(L"Test1", info.url_hash);
++      EXPECT_EQ(1, info.encrypted_data[0]);
++      EXPECT_EQ(4u, info.encrypted_data.size());
++      ++ie7_password_count_;
++    }
++  }
++
+   void AddHomepage(const GURL& homepage) override {
+     EXPECT_EQ(homepage.spec(), "http://www.test.com/");
+     ++homepage_count_;
+@@ -325,9 +362,12 @@ class TestObserver : public ProfileWriter,
+ 
+   size_t bookmark_count_;
+   size_t history_count_;
++  size_t password_count_;
+   size_t favicon_count_;
+   size_t homepage_count_;
++  size_t ie7_password_count_;
+   uint16_t importer_items_;
++  TestIEVersion ie_version_;
+ };
+ 
+ class MalformedFavoritesRegistryTestObserver
+@@ -351,6 +391,7 @@ class MalformedFavoritesRegistryTestObserver
+   bool BookmarkModelIsLoaded() const override { return true; }
+   bool TemplateURLServiceIsLoaded() const override { return true; }
+ 
++  void AddPasswordForm(const autofill::PasswordForm& form) override {}
+   void AddHistoryPage(const history::URLRows& page,
+                       history::VisitSource visit_source) override {}
+   void AddKeywords(TemplateURLService::OwnedTemplateURLVector template_urls,
+@@ -461,16 +502,20 @@ IN_PROC_BROWSER_TEST_F(IEImporterBrowserTest, IEImporter) {
+   // Starts to import the above settings.
+   // Deletes itself.
+   ExternalProcessImporterHost* host = new ExternalProcessImporterHost;
+-  TestObserver* observer =
+-      new TestObserver(importer::HISTORY | importer::FAVORITES);
++  TestObserver* observer = new TestObserver(
++      importer::HISTORY | importer::PASSWORDS | importer::FAVORITES,
++      TestObserver::IE6);
+   host->set_observer(observer);
+ 
+   importer::SourceProfile source_profile;
+   source_profile.importer_type = importer::TYPE_IE;
+   source_profile.source_path = temp_dir_.GetPath();
+ 
+-  host->StartImportSettings(source_profile, browser()->profile(),
+-                            importer::HISTORY | importer::FAVORITES, observer);
++  host->StartImportSettings(
++      source_profile,
++      browser()->profile(),
++      importer::HISTORY | importer::PASSWORDS | importer::FAVORITES,
++      observer);
+   base::RunLoop().Run();
+ 
+   // Cleans up.
+@@ -553,11 +598,38 @@ IN_PROC_BROWSER_TEST_F(IEImporterBrowserTest,
+   }
+ }
+ 
++IN_PROC_BROWSER_TEST_F(IEImporterBrowserTest, IE7ImporterPasswordsTest) {
++  // Starts to import the IE7 passwords.
++  // Deletes itself.
++  ExternalProcessImporterHost* host = new ExternalProcessImporterHost;
++  TestObserver* observer = new TestObserver(importer::PASSWORDS,
++                                            TestObserver::IE7);
++  host->set_observer(observer);
++
++  base::string16 key_path(importer::GetIE7PasswordsKey());
++  base::win::RegKey key;
++  ASSERT_EQ(ERROR_SUCCESS,
++            key.Create(HKEY_CURRENT_USER, key_path.c_str(), KEY_WRITE));
++  key.WriteValue(L"Test1", 1);
++
++  importer::SourceProfile source_profile;
++  source_profile.importer_type = importer::TYPE_IE;
++  source_profile.source_path = temp_dir_.GetPath();
++
++  host->StartImportSettings(
++      source_profile,
++      browser()->profile(),
++      importer::PASSWORDS,
++      observer);
++  base::RunLoop().Run();
++}
++
+ IN_PROC_BROWSER_TEST_F(IEImporterBrowserTest, IEImporterHomePageTest) {
+   // Starts to import the IE home page.
+   // Deletes itself.
+   ExternalProcessImporterHost* host = new ExternalProcessImporterHost;
+-  TestObserver* observer = new TestObserver(importer::HOME_PAGE);
++  TestObserver* observer = new TestObserver(importer::HOME_PAGE,
++                                            TestObserver::IE6);
+   host->set_observer(observer);
+ 
+   base::string16 key_path(importer::GetIESettingsKey());
+diff --git a/chrome/utility/importer/ie_importer_win.cc b/chrome/utility/importer/ie_importer_win.cc
+index 39d81273135cb..879a51d00994c 100644
+--- a/chrome/utility/importer/ie_importer_win.cc
++++ b/chrome/utility/importer/ie_importer_win.cc
+@@ -40,6 +40,7 @@
+ #include "chrome/common/importer/pstore_declarations.h"
+ #include "chrome/grit/generated_resources.h"
+ #include "chrome/utility/importer/favicon_reencode.h"
++#include "components/autofill/core/common/password_form.h"
+ #include "ui/base/l10n/l10n_util.h"
+ #include "url/gurl.h"
+ #include "url/url_constants.h"
+@@ -49,6 +50,7 @@ namespace {
+ // Registry key paths from which we import IE settings.
+ const base::char16 kSearchScopePath[] =
+     L"Software\\Microsoft\\Internet Explorer\\SearchScopes";
++const base::char16 kIEVersionKey[] = L"Software\\Microsoft\\Internet Explorer";
+ 
+ // NTFS stream name of favicon image data.
+ const base::char16 kFaviconStreamName[] = L":favicon:$DATA";
+@@ -458,6 +460,15 @@ void IEImporter::StartImport(const importer::SourceProfile& source_profile,
+     ImportSearchEngines();
+     bridge_->NotifyItemEnded(importer::SEARCH_ENGINES);
+   }
++  if ((items & importer::PASSWORDS) && !cancelled()) {
++    bridge_->NotifyItemStarted(importer::PASSWORDS);
++    // Always import IE6 passwords.
++    ImportPasswordsIE6();
++
++    if (CurrentIEVersion() >= 7)
++      ImportPasswordsIE7();
++    bridge_->NotifyItemEnded(importer::PASSWORDS);
++  }
+   bridge_->NotifyEnded();
+ }
+ 
+@@ -547,6 +558,147 @@ void IEImporter::ImportHistory() {
+   }
+ }
+ 
++void IEImporter::ImportPasswordsIE6() {
++  GUID AutocompleteGUID = kPStoreAutocompleteGUID;
++  if (!source_path_.empty()) {
++    // We supply a fake GUID for testting.
++    AutocompleteGUID = kUnittestGUID;
++  }
++
++  // The PStoreCreateInstance function retrieves an interface pointer
++  // to a storage provider. But this function has no associated import
++  // library or header file, we must call it using the LoadLibrary()
++  // and GetProcAddress() functions.
++  typedef HRESULT(WINAPI * PStoreCreateFunc)(IPStore**, DWORD, DWORD, DWORD);
++  HMODULE pstorec_dll = LoadLibrary(L"pstorec.dll");
++  if (!pstorec_dll)
++    return;
++  PStoreCreateFunc PStoreCreateInstance =
++      (PStoreCreateFunc)GetProcAddress(pstorec_dll, "PStoreCreateInstance");
++  if (!PStoreCreateInstance) {
++    FreeLibrary(pstorec_dll);
++    return;
++  }
++
++  Microsoft::WRL::ComPtr<IPStore> pstore;
++  HRESULT result = PStoreCreateInstance(pstore.GetAddressOf(), 0, 0, 0);
++  if (result != S_OK) {
++    FreeLibrary(pstorec_dll);
++    return;
++  }
++
++  std::vector<AutoCompleteInfo> ac_list;
++
++  // Enumerates AutoComplete items in the protected database.
++  Microsoft::WRL::ComPtr<IEnumPStoreItems> item;
++  result = pstore->EnumItems(0, &AutocompleteGUID, &AutocompleteGUID, 0,
++                             item.GetAddressOf());
++  if (result != PST_E_OK) {
++    pstore.Reset();
++    FreeLibrary(pstorec_dll);
++    return;
++  }
++
++  wchar_t* item_name;
++  while (!cancelled() && SUCCEEDED(item->Next(1, &item_name, 0))) {
++    DWORD length = 0;
++    unsigned char* buffer = NULL;
++    result = pstore->ReadItem(0, &AutocompleteGUID, &AutocompleteGUID,
++                              item_name, &length, &buffer, NULL, 0);
++    if (SUCCEEDED(result)) {
++      AutoCompleteInfo ac;
++      ac.key = item_name;
++      base::string16 data;
++      data.insert(0, reinterpret_cast<wchar_t*>(buffer),
++                  length / sizeof(wchar_t));
++
++      // The key name is always ended with ":StringData".
++      const wchar_t kDataSuffix[] = L":StringData";
++      size_t i = ac.key.rfind(kDataSuffix);
++      if (i != base::string16::npos && ac.key.substr(i) == kDataSuffix) {
++        ac.key.erase(i);
++        ac.is_url = (ac.key.find(L"://") != base::string16::npos);
++        ac_list.push_back(ac);
++        ac_list.back().data =
++            base::SplitString(data, base::string16(1, '\0'),
++                              base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
++      }
++      CoTaskMemFree(buffer);
++    }
++    CoTaskMemFree(item_name);
++  }
++  // Releases them before unload the dll.
++  item.Reset();
++  pstore.Reset();
++  FreeLibrary(pstorec_dll);
++
++  size_t i;
++  for (i = 0; i < ac_list.size(); i++) {
++    if (!ac_list[i].is_url || ac_list[i].data.size() < 2)
++      continue;
++
++    GURL url(ac_list[i].key.c_str());
++    if (!(base::LowerCaseEqualsASCII(url.scheme(), url::kHttpScheme) ||
++          base::LowerCaseEqualsASCII(url.scheme(), url::kHttpsScheme))) {
++      continue;
++    }
++
++    autofill::PasswordForm form;
++    GURL::Replacements rp;
++    rp.ClearUsername();
++    rp.ClearPassword();
++    rp.ClearQuery();
++    rp.ClearRef();
++    form.origin = url.ReplaceComponents(rp);
++    form.username_value = ac_list[i].data[0];
++    form.password_value = ac_list[i].data[1];
++    form.signon_realm = url.GetOrigin().spec();
++
++    // Goes through the list to find out the username field
++    // of the web page.
++    size_t list_it, item_it;
++    for (list_it = 0; list_it < ac_list.size(); ++list_it) {
++      if (ac_list[list_it].is_url)
++        continue;
++
++      for (item_it = 0; item_it < ac_list[list_it].data.size(); ++item_it)
++        if (ac_list[list_it].data[item_it] == form.username_value) {
++          form.username_element = ac_list[list_it].key;
++          break;
++        }
++    }
++
++    bridge_->SetPasswordForm(form);
++  }
++}
++
++void IEImporter::ImportPasswordsIE7() {
++  base::string16 key_path(importer::GetIE7PasswordsKey());
++  base::win::RegKey key(HKEY_CURRENT_USER, key_path.c_str(), KEY_READ);
++  base::win::RegistryValueIterator reg_iterator(HKEY_CURRENT_USER,
++                                                key_path.c_str());
++  importer::ImporterIE7PasswordInfo password_info;
++  while (reg_iterator.Valid() && !cancelled()) {
++    // Get the size of the encrypted data.
++    DWORD value_len = 0;
++    key.ReadValue(reg_iterator.Name(), NULL, &value_len, NULL);
++    if (value_len) {
++      // Query the encrypted data.
++      password_info.encrypted_data.resize(value_len);
++      if (key.ReadValue(reg_iterator.Name(),
++                        &password_info.encrypted_data.front(), &value_len,
++                        NULL) == ERROR_SUCCESS) {
++        password_info.url_hash = reg_iterator.Name();
++        password_info.date_created = base::Time::Now();
++
++        bridge_->AddIE7PasswordInfo(password_info);
++      }
++    }
++
++    ++reg_iterator;
++  }
++}
++
+ void IEImporter::ImportSearchEngines() {
+   // On IE, search engines are stored in the registry, under:
+   // Software\Microsoft\Internet Explorer\SearchScopes
+@@ -738,3 +890,15 @@ void IEImporter::ParseFavoritesFolder(
+        iter != favicon_map.end(); ++iter)
+     favicons->push_back(iter->second);
+ }
++
++int IEImporter::CurrentIEVersion() const {
++  static int version = -1;
++  if (version < 0) {
++    wchar_t buffer[128];
++    DWORD buffer_length = sizeof(buffer);
++    base::win::RegKey reg_key(HKEY_LOCAL_MACHINE, kIEVersionKey, KEY_READ);
++    LONG result = reg_key.ReadValue(L"Version", buffer, &buffer_length, NULL);
++    version = ((result == ERROR_SUCCESS) ? _wtoi(buffer) : 0);
++  }
++  return version;
++}
+diff --git a/chrome/utility/importer/ie_importer_win.h b/chrome/utility/importer/ie_importer_win.h
+index 0c9de8de083b9..cfe8b7f26c854 100644
+--- a/chrome/utility/importer/ie_importer_win.h
++++ b/chrome/utility/importer/ie_importer_win.h
+@@ -52,6 +52,12 @@ class IEImporter : public Importer {
+   // Reads history information from COM interface.
+   void ImportHistory();
+ 
++  // Import password for IE6 stored in protected storage.
++  void ImportPasswordsIE6();
++
++  // Import password for IE7 and IE8 stored in Storage2.
++  void ImportPasswordsIE7();
++
+   void ImportSearchEngines();
+ 
+   // Import the homepage setting of IE. Note: IE supports multiple home pages,
+@@ -69,6 +75,9 @@ class IEImporter : public Importer {
+                             BookmarkVector* bookmarks,
+                             favicon_base::FaviconUsageDataList* favicons);
+ 
++  // Determines which version of IE is in use.
++  int CurrentIEVersion() const;
++
+   // Set to true when importing favorites from old Edge on Windows 10.
+   bool edge_import_mode_;
+ 

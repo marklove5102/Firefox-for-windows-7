@@ -1,0 +1,1185 @@
+diff --git a/base/files/file_enumerator_win.cc b/base/files/file_enumerator_win.cc
+index e629cc203e5e8..402a07209a8a2 100644
+--- a/base/files/file_enumerator_win.cc
++++ b/base/files/file_enumerator_win.cc
+@@ -9,6 +9,7 @@
+ #include "base/strings/string_util.h"
+ #include "base/threading/scoped_blocking_call.h"
+ #include "base/win/shlwapi.h"
++#include "base/win/windows_version.h"
+ 
+ namespace base {
+ 
+@@ -101,10 +102,18 @@ FilePath FileEnumerator::Next() {
+       // Start a new find operation.
+       const FilePath src =
+           BuildSearchFilter(folder_search_policy_, root_path_, pattern_);
+-      find_handle_ = FindFirstFileEx(as_wcstr(src.value()),
+-                                     FindExInfoBasic,  // Omit short name.
+-                                     &find_data_, FindExSearchNameMatch,
+-                                     nullptr, FIND_FIRST_EX_LARGE_FETCH);
++      if (base::win::GetVersion() >= base::win::VERSION_WIN7) {
++        // Use a "large fetch" on newer Windows which should speed up large
++        // enumerations (we seldom abort in the middle).
++        find_handle_ = FindFirstFileEx(as_wcstr(src.value()),
++                                       FindExInfoBasic,  // Omit short name.
++                                       &find_data_,
++                                       FindExSearchNameMatch,
++                                       nullptr,
++                                       FIND_FIRST_EX_LARGE_FETCH);
++      } else {
++        find_handle_ = FindFirstFile(as_wcstr(src.value()), &find_data_);
++      }
+       has_find_data_ = true;
+     } else {
+       // Search for the next file/directory.
+diff --git a/base/win/shortcut.cc b/base/win/shortcut.cc
+index 95adfce06d265..8cabf3842ee30 100644
+--- a/base/win/shortcut.cc
++++ b/base/win/shortcut.cc
+@@ -137,7 +137,8 @@ bool CreateOrUpdateShortcutLink(const FilePath& shortcut_path,
+   bool has_toast_activator_clsid =
+       (properties.options &
+        ShortcutProperties::PROPERTIES_TOAST_ACTIVATOR_CLSID) != 0;
+-  if (has_app_id || has_dual_mode || has_toast_activator_clsid) {
++  if ((has_app_id || has_dual_mode || has_toast_activator_clsid) &&
++      GetVersion() >= VERSION_WIN7) {
+     ComPtr<IPropertyStore> property_store;
+     if (FAILED(i_shell_link.CopyTo(property_store.GetAddressOf())) ||
+         !property_store.Get())
+@@ -247,9 +248,11 @@ bool ResolveShortcutProperties(const FilePath& shortcut_path,
+     properties->set_icon(FilePath(temp), temp_index);
+   }
+ 
+-  if (options & (ShortcutProperties::PROPERTIES_APP_ID |
+-                 ShortcutProperties::PROPERTIES_DUAL_MODE |
+-                 ShortcutProperties::PROPERTIES_TOAST_ACTIVATOR_CLSID)) {
++  // Windows 7+ options, avoiding unnecessary work.
++  if ((options & (ShortcutProperties::PROPERTIES_APP_ID |
++                 ShortcutProperties::PROPERTIES_DUAL_MODE |
++                 ShortcutProperties::PROPERTIES_TOAST_ACTIVATOR_CLSID)) &&
++      GetVersion() >= VERSION_WIN7) {
+     ComPtr<IPropertyStore> property_store;
+     if (FAILED(i_shell_link.CopyTo(property_store.GetAddressOf())))
+       return false;
+@@ -316,8 +319,9 @@ bool ResolveShortcut(const FilePath& shortcut_path,
+ }
+ 
+ bool CanPinShortcutToTaskbar() {
+-  // "Pin to taskbar" stopped being supported in Windows 10.
+-  return GetVersion() < VERSION_WIN10;
++  // "Pin to taskbar" appeared in Windows 7 and stopped being supported in
++  // Windows 10.
++  return GetVersion() >= VERSION_WIN7 && GetVersion() < VERSION_WIN10;
+ }
+ 
+ bool PinShortcutToTaskbar(const FilePath& shortcut) {
+@@ -332,6 +336,11 @@ bool PinShortcutToTaskbar(const FilePath& shortcut) {
+ bool UnpinShortcutFromTaskbar(const FilePath& shortcut) {
+   ScopedBlockingCall scoped_blocking_call(FROM_HERE, BlockingType::MAY_BLOCK);
+ 
++  // "Unpin from taskbar" is only supported after Win7. It is possible to remove
++  // a shortcut pinned by a user on Windows 10+.
++  if (GetVersion() < VERSION_WIN7)
++    return false;
++
+   intptr_t result = reinterpret_cast<intptr_t>(ShellExecute(
+       NULL, L"taskbarunpin", as_wcstr(shortcut.value()), NULL, NULL, 0));
+   return result > 32;
+diff --git a/chrome/browser/download/download_status_updater_win.cc b/chrome/browser/download/download_status_updater_win.cc
+index 6f6b3d77a6842..93a36f005c6c6 100644
+--- a/chrome/browser/download/download_status_updater_win.cc
++++ b/chrome/browser/download/download_status_updater_win.cc
+@@ -10,6 +10,7 @@
+ #include <wrl/client.h>
+ 
+ #include "base/logging.h"
++#include "base/win/windows_version.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/browser_list.h"
+ #include "chrome/browser/ui/browser_window.h"
+@@ -20,6 +21,10 @@ namespace {
+ void UpdateTaskbarProgressBar(int download_count,
+                               bool progress_known,
+                               float progress) {
++  // Taskbar progress bar is only supported on Win7.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   Microsoft::WRL::ComPtr<ITaskbarList3> taskbar;
+   HRESULT result = ::CoCreateInstance(
+       CLSID_TaskbarList, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&taskbar));
+diff --git a/chrome/browser/media/webrtc/webrtc_browsertest_base.cc b/chrome/browser/media/webrtc/webrtc_browsertest_base.cc
+index e258eb275084b..562ca644f5830 100644
+--- a/chrome/browser/media/webrtc/webrtc_browsertest_base.cc
++++ b/chrome/browser/media/webrtc/webrtc_browsertest_base.cc
+@@ -461,9 +461,9 @@ std::string WebRtcTestBase::GetStreamSize(
+   return result.substr(3);
+ }
+ 
+-bool WebRtcTestBase::OnWin8OrHigher() const {
++bool WebRtcTestBase::OnWin8() const {
+ #if defined(OS_WIN)
+-  return base::win::GetVersion() >= base::win::VERSION_WIN8;
++  return base::win::GetVersion() > base::win::VERSION_WIN7;
+ #else
+   return false;
+ #endif
+diff --git a/chrome/browser/media/webrtc/webrtc_browsertest_base.h b/chrome/browser/media/webrtc/webrtc_browsertest_base.h
+index 5546ec880600b..4e1b15017b6b6 100644
+--- a/chrome/browser/media/webrtc/webrtc_browsertest_base.h
++++ b/chrome/browser/media/webrtc/webrtc_browsertest_base.h
+@@ -158,8 +158,8 @@ class WebRtcTestBase : public InProcessBrowserTest {
+   std::string GetStreamSize(content::WebContents* tab_contents,
+                             const std::string& video_element) const;
+ 
+-  // Returns true if we're on Windows 8 or higher.
+-  bool OnWin8OrHigher() const;
++  // Returns true if we're on win 8.
++  bool OnWin8() const;
+ 
+   void OpenDatabase(content::WebContents* tab) const;
+   void CloseDatabase(content::WebContents* tab) const;
+diff --git a/chrome/browser/password_manager/password_manager_util_win.cc b/chrome/browser/password_manager/password_manager_util_win.cc
+index c883e8f934072..01dd5c2821f1e 100644
+--- a/chrome/browser/password_manager/password_manager_util_win.cc
++++ b/chrome/browser/password_manager/password_manager_util_win.cc
+@@ -25,6 +25,7 @@
+ #include "base/task/post_task.h"
+ #include "base/time/time.h"
+ #include "base/win/win_util.h"
++#include "base/win/windows_version.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/grit/chromium_strings.h"
+ #include "components/password_manager/core/browser/password_manager.h"
+@@ -177,7 +178,10 @@ void GetOsPasswordStatusInternal(PasswordCheckPrefs* prefs,
+     *status = PASSWORD_STATUS_WIN_DOMAIN;
+   } else {
+     username_length = CREDUI_MAX_USERNAME_LENGTH;
+-    if (GetUserName(username, &username_length)) {
++    // CheckBlankPasswordWithPrefs() isn't safe to call on before Windows 7.
++    // http://crbug.com/345916
++    if (base::win::GetVersion() >= base::win::VERSION_WIN7 &&
++        GetUserName(username, &username_length)) {
+       *status = CheckBlankPasswordWithPrefs(username, prefs) ?
+           PASSWORD_STATUS_BLANK :
+           PASSWORD_STATUS_NONBLANK;
+diff --git a/chrome/browser/prefs/incognito_mode_prefs.cc b/chrome/browser/prefs/incognito_mode_prefs.cc
+index d00d33a7c1250..b5324b392c822 100644
+--- a/chrome/browser/prefs/incognito_mode_prefs.cc
++++ b/chrome/browser/prefs/incognito_mode_prefs.cc
+@@ -29,6 +29,7 @@
+ #include "base/bind.h"
+ #include "base/bind_helpers.h"
+ #include "base/memory/singleton.h"
++#include "base/win/windows_version.h"
+ #endif  // OS_WIN
+ 
+ #if defined(OS_ANDROID)
+@@ -76,6 +77,10 @@ class PlatformParentalControlsValue {
+     // Since we can potentially block, make sure the thread is okay with this.
+     base::ScopedBlockingCall scoped_blocking_call(
+         FROM_HERE, base::BlockingType::MAY_BLOCK);
++    // Query this info on Windows 7 and above.
++    if (base::win::GetVersion() < base::win::VERSION_WIN7)
++      return false;
++
+     Microsoft::WRL::ComPtr<IWindowsParentalControlsCore> parent_controls;
+     HRESULT hr = ::CoCreateInstance(__uuidof(WindowsParentalControls), nullptr,
+                                     CLSCTX_ALL, IID_PPV_ARGS(&parent_controls));
+diff --git a/chrome/browser/shell_integration_win.cc b/chrome/browser/shell_integration_win.cc
+index fb717d2b0b132..c8fc1ac86bd11 100644
+--- a/chrome/browser/shell_integration_win.cc
++++ b/chrome/browser/shell_integration_win.cc
+@@ -746,6 +746,9 @@ base::string16 GetChromiumModelIdForProfile(
+ }
+ 
+ void MigrateTaskbarPins() {
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   // This needs to happen (e.g. so that the appid is fixed and the
+   // run-time Chrome icon is merged with the taskbar shortcut), but it is not an
+   // urgent task.
+@@ -762,6 +765,8 @@ void GetIsPinnedToTaskbarState(
+ 
+ int MigrateShortcutsInPathInternal(const base::FilePath& chrome_exe,
+                                    const base::FilePath& path) {
++  DCHECK(base::win::GetVersion() >= base::win::VERSION_WIN7);
++
+   // Enumerate all pinned shortcuts in the given path directly.
+   base::FileEnumerator shortcuts_enum(
+       path, false,  // not recursive
+diff --git a/chrome/browser/ui/pdf/adobe_reader_info_win.cc b/chrome/browser/ui/pdf/adobe_reader_info_win.cc
+index 8b180af516780..16893f6ee6d8f 100644
+--- a/chrome/browser/ui/pdf/adobe_reader_info_win.cc
++++ b/chrome/browser/ui/pdf/adobe_reader_info_win.cc
+@@ -18,6 +18,7 @@
+ #include "base/version.h"
+ #include "base/win/registry.h"
+ #include "base/win/shlwapi.h"
++#include "base/win/windows_version.h"
+ #include "chrome/browser/browser_process.h"
+ 
+ namespace {
+@@ -40,8 +41,9 @@ base::FilePath GetInstalledPath(const base::char16* app) {
+   base::FilePath filepath;
+   base::win::RegKey hkcu_key(HKEY_CURRENT_USER, reg_path.c_str(), KEY_READ);
+   base::string16 path;
+-  // AppPaths can also be registered in HKCU: http://goo.gl/UgFOf.
+-  if (hkcu_key.ReadValue(kRegistryPath, &path) == ERROR_SUCCESS) {
++  // As of Win7 AppPaths can also be registered in HKCU: http://goo.gl/UgFOf.
++  if (base::win::GetVersion() >= base::win::VERSION_WIN7 &&
++      hkcu_key.ReadValue(kRegistryPath, &path) == ERROR_SUCCESS) {
+     filepath = base::FilePath(path);
+   } else {
+     base::win::RegKey hklm_key(HKEY_LOCAL_MACHINE, reg_path.c_str(), KEY_READ);
+diff --git a/chrome/browser/ui/prefs/prefs_tab_helper.cc b/chrome/browser/ui/prefs/prefs_tab_helper.cc
+index 4d4fd0e7a4bb6..cafaf268a1aee 100644
+--- a/chrome/browser/ui/prefs/prefs_tab_helper.cc
++++ b/chrome/browser/ui/prefs/prefs_tab_helper.cc
+@@ -58,6 +58,10 @@
+ #include "chrome/browser/themes/theme_service_factory.h"
+ #endif
+ 
++#if defined(OS_WIN)
++#include "base/win/windows_version.h"
++#endif
++
+ using content::WebContents;
+ using content::WebPreferences;
+ 
+@@ -162,7 +166,8 @@ bool ShouldUseAlternateDefaultFixedFont(const std::string& script) {
+     return false;
+   UINT smooth_type = 0;
+   SystemParametersInfo(SPI_GETFONTSMOOTHINGTYPE, 0, &smooth_type, 0);
+-  return smooth_type == FE_FONTSMOOTHINGCLEARTYPE;
++  return (base::win::GetVersion() >= base::win::VERSION_WIN7) &&
++         (smooth_type == FE_FONTSMOOTHINGCLEARTYPE);
+ }
+ #endif
+ 
+diff --git a/chrome/browser/ui/startup/startup_browser_creator_impl.cc b/chrome/browser/ui/startup/startup_browser_creator_impl.cc
+index d089d9befa900..ae3f329de4471 100644
+--- a/chrome/browser/ui/startup/startup_browser_creator_impl.cc
++++ b/chrome/browser/ui/startup/startup_browser_creator_impl.cc
+@@ -76,6 +76,7 @@
+ #endif
+ 
+ #if defined(OS_WIN)
++#include "base/win/windows_version.h"
+ #if defined(GOOGLE_CHROME_BUILD)
+ #include "chrome/browser/conflicts/incompatible_applications_updater_win.h"
+ #endif  // defined(GOOGLE_CHROME_BUILD)
+@@ -158,8 +158,12 @@ LaunchMode GetLaunchShortcutKind() {
+   const base::string16 shortcut(base::i18n::ToLower(shortcut_path.value()));
+ 
+   // The windows quick launch path is not localized.
+-  if (shortcut.find(L"\\quick launch\\") != base::StringPiece16::npos)
+-    return LM_SHORTCUT_TASKBAR;
++  if (shortcut.find(L"\\quick launch\\") != base::StringPiece16::npos) {
++    if (base::win::GetVersion() >= base::win::VERSION_WIN7)
++      return LM_SHORTCUT_TASKBAR;
++    else
++      return LM_SHORTCUT_QUICKLAUNCH;
++  }
+ 
+   // Check the common shortcut locations.
+   static constexpr struct {
+diff --git a/chrome/browser/ui/views/frame/browser_window_property_manager_win.cc b/chrome/browser/ui/views/frame/browser_window_property_manager_win.cc
+index 3080979dcf5f8..00fcecd0ea202 100644
+--- a/chrome/browser/ui/views/frame/browser_window_property_manager_win.cc
++++ b/chrome/browser/ui/views/frame/browser_window_property_manager_win.cc
+@@ -97,6 +97,9 @@ std::unique_ptr<BrowserWindowPropertyManager>
+ BrowserWindowPropertyManager::CreateBrowserWindowPropertyManager(
+     BrowserView* view,
+     HWND hwnd) {
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return nullptr;
++
+   std::unique_ptr<BrowserWindowPropertyManager> browser_window_property_manager(
+       new BrowserWindowPropertyManager(view, hwnd));
+   browser_window_property_manager->UpdateWindowProperties();
+diff --git a/chrome/browser/taskbar/taskbar_decorator_win.cc b/chrome/browser/taskbar/taskbar_decorator_win.cc
+index aab7e5a5f4e67..5f99203a94d32 100644
+--- a/chrome/browser/taskbar/taskbar_decorator_win.cc
++++ b/chrome/browser/taskbar/taskbar_decorator_win.cc
+@@ -12,6 +12,7 @@
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/post_task.h"
+ #include "base/win/scoped_gdi_object.h"
++#include "base/win/windows_version.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/profiles/avatar_menu.h"
+ #include "chrome/browser/profiles/profile.h"
+@@ -68,6 +69,9 @@ void SetOverlayIcon(HWND hwnd, std::unique_ptr<SkBitmap> bitmap) {
+ }
+ 
+ void DrawTaskbarDecoration(gfx::NativeWindow window, const gfx::Image* image) {
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   HWND hwnd = views::HWNDForNativeWindow(window);
+ 
+   // SetOverlayIcon() does nothing if the window is not visible so testing here
+diff --git a/chrome/browser/ui/webui/set_as_default_browser_ui_browsertest_win.cc b/chrome/browser/ui/webui/set_as_default_browser_ui_browsertest_win.cc
+index 80e5953f533d1..eef4638710b61 100644
+--- a/chrome/browser/ui/webui/set_as_default_browser_ui_browsertest_win.cc
++++ b/chrome/browser/ui/webui/set_as_default_browser_ui_browsertest_win.cc
+@@ -40,8 +40,8 @@ class SetAsDefaultBrowserUIBrowserTestWithFirstRun
+ 
+ IN_PROC_BROWSER_TEST_F(SetAsDefaultBrowserUIBrowserTestWithFirstRun, Test) {
+   // Windows 8 only test case.
+-  if (base::win::GetVersion() != base::win::VERSION_WIN8 &&
+-      base::win::GetVersion() != base::win::VERSION_WIN8_1) {
++  if (base::win::GetVersion() <= base::win::VERSION_WIN7 ||
++      base::win::GetVersion() >= base::win::VERSION_WIN10) {
+     return;
+   }
+   ASSERT_FALSE(IsBrowserVisible(browser()));
+diff --git a/chrome/browser/web_applications/components/web_app_shortcut_win.cc b/chrome/browser/web_applications/components/web_app_shortcut_win.cc
+index ef26f8800c374..a71ee45fa63e7 100644
+--- a/chrome/browser/web_applications/components/web_app_shortcut_win.cc
++++ b/chrome/browser/web_applications/components/web_app_shortcut_win.cc
+@@ -22,6 +22,7 @@
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/threading/scoped_blocking_call.h"
+ #include "base/win/shortcut.h"
++#include "base/win/windows_version.h"
+ #include "chrome/browser/shell_integration.h"
+ #include "chrome/browser/shell_integration_win.h"
+ #include "chrome/common/chrome_switches.h"
+@@ -299,8 +300,10 @@ void GetShortcutLocationsAndDeleteShortcuts(
+       web_app::APP_MENU_LOCATION_SUBDIR_CHROMEAPPS;
+   std::vector<base::FilePath> all_paths =
+       web_app::internals::GetShortcutPaths(all_shortcut_locations);
+-  if (!web_app_path.empty())
++  if (base::win::GetVersion() >= base::win::VERSION_WIN7 &&
++      !web_app_path.empty()) {
+     all_paths.push_back(web_app_path);
++  }
+ 
+   if (was_pinned_to_taskbar) {
+     // Determine if there is a link to this app in the TaskBar pin directory.
+diff --git a/chrome/utility/importer/edge_database_reader_unittest_win.cc b/chrome/utility/importer/edge_database_reader_unittest_win.cc
+index 80e194c4860eb..630f439ecfac0 100644
+--- a/chrome/utility/importer/edge_database_reader_unittest_win.cc
++++ b/chrome/utility/importer/edge_database_reader_unittest_win.cc
+@@ -16,6 +16,7 @@
+ #include "base/strings/string_util.h"
+ #include "base/strings/stringprintf.h"
+ #include "base/strings/utf_string_conversions.h"
++#include "base/win/windows_version.h"
+ #include "chrome/common/chrome_paths.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ #include "third_party/zlib/google/compression_utils.h"
+@@ -71,6 +72,10 @@ class EdgeDatabaseReaderTest : public ::testing::Test {
+ }  // namespace
+ 
+ TEST_F(EdgeDatabaseReaderTest, OpenFileTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   base::FilePath database_path;
+   ASSERT_TRUE(CopyTestDatabase(L"testdata.edb", &database_path));
+   EdgeDatabaseReader reader;
+@@ -78,11 +83,19 @@ TEST_F(EdgeDatabaseReaderTest, OpenFileTest) {
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, NoFileTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   EdgeDatabaseReader reader;
+   EXPECT_FALSE(reader.OpenDatabase(L"ThisIsntARealFileName.edb"));
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, RandomGarbageDatabaseTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   base::FilePath database_path;
+   ASSERT_TRUE(CopyTestDatabase(L"random.edb", &database_path));
+   EdgeDatabaseReader reader;
+@@ -90,6 +103,10 @@ TEST_F(EdgeDatabaseReaderTest, RandomGarbageDatabaseTest) {
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, ZerosDatabaseTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   base::FilePath database_path;
+   std::string zeros(0x10000, '\0');
+   ASSERT_TRUE(WriteFile(L"zeros.edb", zeros, &database_path));
+@@ -98,6 +115,10 @@ TEST_F(EdgeDatabaseReaderTest, ZerosDatabaseTest) {
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, EmptyDatabaseTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   base::FilePath database_path;
+   ASSERT_TRUE(WriteFile(L"empty.edb", "", &database_path));
+   EdgeDatabaseReader reader;
+@@ -105,6 +126,10 @@ TEST_F(EdgeDatabaseReaderTest, EmptyDatabaseTest) {
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, OpenTableDatabaseTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   base::FilePath database_path;
+   ASSERT_TRUE(CopyTestDatabase(L"testdata.edb", &database_path));
+   EdgeDatabaseReader reader;
+@@ -115,6 +140,10 @@ TEST_F(EdgeDatabaseReaderTest, OpenTableDatabaseTest) {
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, InvalidTableDatabaseTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   base::FilePath database_path;
+   ASSERT_TRUE(CopyTestDatabase(L"testdata.edb", &database_path));
+   EdgeDatabaseReader reader;
+@@ -125,6 +154,10 @@ TEST_F(EdgeDatabaseReaderTest, InvalidTableDatabaseTest) {
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, NotOpenDatabaseTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   EdgeDatabaseReader reader;
+   std::unique_ptr<EdgeDatabaseTableEnumerator> table_enum =
+       reader.OpenTableEnumerator(L"TestTable");
+@@ -133,6 +166,10 @@ TEST_F(EdgeDatabaseReaderTest, NotOpenDatabaseTest) {
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, AlreadyOpenDatabaseTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   base::FilePath database_path;
+   ASSERT_TRUE(CopyTestDatabase(L"testdata.edb", &database_path));
+   EdgeDatabaseReader reader;
+@@ -142,6 +179,10 @@ TEST_F(EdgeDatabaseReaderTest, AlreadyOpenDatabaseTest) {
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, OpenTableAndReadDataDatabaseTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   base::FilePath database_path;
+   ASSERT_TRUE(CopyTestDatabase(L"testdata.edb", &database_path));
+   EdgeDatabaseReader reader;
+@@ -201,6 +242,10 @@ TEST_F(EdgeDatabaseReaderTest, OpenTableAndReadDataDatabaseTest) {
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, CheckEnumResetDatabaseTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   base::FilePath database_path;
+   ASSERT_TRUE(CopyTestDatabase(L"testdata.edb", &database_path));
+   EdgeDatabaseReader reader;
+@@ -221,6 +266,10 @@ TEST_F(EdgeDatabaseReaderTest, CheckEnumResetDatabaseTest) {
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, InvalidColumnDatabaseTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   base::FilePath database_path;
+   ASSERT_TRUE(CopyTestDatabase(L"testdata.edb", &database_path));
+   EdgeDatabaseReader reader;
+@@ -234,6 +283,10 @@ TEST_F(EdgeDatabaseReaderTest, InvalidColumnDatabaseTest) {
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, NoColumnDatabaseTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   base::FilePath database_path;
+   ASSERT_TRUE(CopyTestDatabase(L"testdata.edb", &database_path));
+   EdgeDatabaseReader reader;
+@@ -247,6 +300,10 @@ TEST_F(EdgeDatabaseReaderTest, NoColumnDatabaseTest) {
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, EmptyTableDatabaseTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   base::FilePath database_path;
+   ASSERT_TRUE(CopyTestDatabase(L"testdata.edb", &database_path));
+   EdgeDatabaseReader reader;
+@@ -270,6 +327,9 @@ TEST_F(EdgeDatabaseReaderTest, UnicodeStringsDatabaseTest) {
+       "\x48\x65\x6C\x6C\x6F",
+       "\xEC\x95\x88\xEB\x85\x95\xED\x95\x98\xEC\x84\xB8\xEC\x9A\x94",
+   };
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
+ 
+   base::FilePath database_path;
+   ASSERT_TRUE(CopyTestDatabase(L"testdata.edb", &database_path));
+@@ -292,6 +352,10 @@ TEST_F(EdgeDatabaseReaderTest, UnicodeStringsDatabaseTest) {
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, NonUnicodeStringsDatabaseTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   base::FilePath database_path;
+   ASSERT_TRUE(CopyTestDatabase(L"testdata.edb", &database_path));
+   EdgeDatabaseReader reader;
+@@ -305,6 +369,10 @@ TEST_F(EdgeDatabaseReaderTest, NonUnicodeStringsDatabaseTest) {
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, CheckNullColumnDatabaseTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   base::FilePath database_path;
+   ASSERT_TRUE(CopyTestDatabase(L"testdata.edb", &database_path));
+   EdgeDatabaseReader reader;
+@@ -352,6 +420,10 @@ TEST_F(EdgeDatabaseReaderTest, CheckNullColumnDatabaseTest) {
+ }
+ 
+ TEST_F(EdgeDatabaseReaderTest, CheckInvalidColumnTypeDatabaseTest) {
++  // Only verified to work with ESE library on Windows 7 and above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   base::FilePath database_path;
+   ASSERT_TRUE(CopyTestDatabase(L"testdata.edb", &database_path));
+   EdgeDatabaseReader reader;
+diff --git a/cloud_print/virtual_driver/win/install/setup.cc b/cloud_print/virtual_driver/win/install/setup.cc
+index fc353a1665a96..70ae0ddd35031 100644
+--- a/cloud_print/virtual_driver/win/install/setup.cc
++++ b/cloud_print/virtual_driver/win/install/setup.cc
+@@ -257,7 +257,8 @@ HRESULT UninstallPrinter(void) {
+ 
+ bool IsOSSupported() {
+   // We don't support Vista or older.
+-  return base::win::GetVersion() >= base::win::VERSION_WIN7;
++  base::win::Version version = base::win::GetVersion();
++  return (version >= base::win::VERSION_WIN7);
+ }
+ 
+ HRESULT RegisterVirtualDriver(const base::FilePath& install_path) {
+diff --git a/components/metrics/drive_metrics_provider_win.cc b/components/metrics/drive_metrics_provider_win.cc
+index 04647a9d41bb5..360b80e690a55 100644
+--- a/components/metrics/drive_metrics_provider_win.cc
++++ b/components/metrics/drive_metrics_provider_win.cc
+@@ -11,12 +11,18 @@
+ #include "base/files/file.h"
+ #include "base/files/file_path.h"
+ #include "base/strings/stringprintf.h"
++#include "base/win/windows_version.h"
+ 
+ namespace metrics {
+ 
+ // static
+ bool DriveMetricsProvider::HasSeekPenalty(const base::FilePath& path,
+                                           bool* has_seek_penalty) {
++  if (base::win::GetVersion() < base::win::VERSION_WIN7) {
++    // TODO(dbeam): re-enable XP and Vista detection in a utility process.
++    return false;
++  }
++
+   std::vector<base::FilePath::StringType> components;
+   path.GetComponents(&components);
+ 
+diff --git a/content/browser/renderer_host/legacy_render_widget_host_win.cc b/content/browser/renderer_host/legacy_render_widget_host_win.cc
+index 770362c81171f..b1fb4d6280f85 100644
+--- a/content/browser/renderer_host/legacy_render_widget_host_win.cc
++++ b/content/browser/renderer_host/legacy_render_widget_host_win.cc
+@@ -11,6 +11,7 @@
+ 
+ #include "base/command_line.h"
+ #include "base/win/win_util.h"
++#include "base/win/windows_version.h"
+ #include "content/browser/accessibility/browser_accessibility_manager_win.h"
+ #include "content/browser/accessibility/browser_accessibility_state_impl.h"
+ #include "content/browser/accessibility/browser_accessibility_win.h"
+@@ -122,7 +123,8 @@ LegacyRenderWidgetHostHWND::~LegacyRenderWidgetHostHWND() {
+ 
+ bool LegacyRenderWidgetHostHWND::Init() {
+   // Only register a touch window if we are using WM_TOUCH.
+-  if (!features::IsUsingWMPointerForTouch())
++  if (!features::IsUsingWMPointerForTouch() &&
++      base::win::GetVersion() >= base::win::VERSION_WIN7)
+     RegisterTouchWindow(hwnd(), TWF_WANTPALM);
+ 
+   HRESULT hr = ::CreateStdAccessibleObject(hwnd(), OBJID_WINDOW,
+diff --git a/services/service_manager/sandbox/win/sandbox_win.cc b/services/service_manager/sandbox/win/sandbox_win.cc
+index 3963c6e33d9f2..3d6f9b80575bf 100644
+--- a/services/service_manager/sandbox/win/sandbox_win.cc
++++ b/services/service_manager/sandbox/win/sandbox_win.cc
+@@ -403,7 +403,7 @@ sandbox::ResultCode AddPolicyForSandboxedProcess(
+   sandbox::ResultCode result = sandbox::SBOX_ALL_OK;
+ 
+   // Win8+ adds a device DeviceApi that we don't need.
+-  if (base::win::GetVersion() >= base::win::VERSION_WIN8)
++  if (base::win::GetVersion() > base::win::VERSION_WIN7)
+     result = policy->AddKernelObjectToClose(L"File", L"\\Device\\DeviceApi");
+   if (result != sandbox::SBOX_ALL_OK)
+     return result;
+diff --git a/content/ppapi_plugin/ppapi_thread.cc b/content/ppapi_plugin/ppapi_thread.cc
+index 39c079dc77823..ebd62ac5fcffc 100644
+--- a/content/ppapi_plugin/ppapi_thread.cc
++++ b/content/ppapi_plugin/ppapi_thread.cc
+@@ -58,6 +58,7 @@
+ 
+ #if defined(OS_WIN)
+ #include "base/win/win_util.h"
++#include "base/win/windows_version.h"
+ #include "content/child/font_warmup_win.h"
+ #include "sandbox/win/src/sandbox.h"
+ #endif
+@@ -74,6 +75,10 @@ const char kWidevineCdmAdapterFileName[] = "widevinecdmadapter.dll";
+ extern sandbox::TargetServices* g_target_services;
+ 
+ // Used by EnumSystemLocales for warming up.
++static BOOL CALLBACK EnumLocalesProc(LPTSTR lpLocaleString) {
++  return TRUE;
++}
++
+ static BOOL CALLBACK EnumLocalesProcEx(
+     LPWSTR lpLocaleString,
+     DWORD dwFlags,
+@@ -86,8 +91,21 @@ static void WarmupWindowsLocales(const ppapi::PpapiPermissions& permissions) {
+   ::GetUserDefaultLangID();
+   ::GetUserDefaultLCID();
+ 
+-  if (permissions.HasPermission(ppapi::PERMISSION_FLASH))
+-    ::EnumSystemLocalesEx(EnumLocalesProcEx, LOCALE_WINDOWS, 0, 0);
++  if (permissions.HasPermission(ppapi::PERMISSION_FLASH)) {
++    if (base::win::GetVersion() >= base::win::VERSION_VISTA) {
++      typedef BOOL (WINAPI *PfnEnumSystemLocalesEx)
++          (LOCALE_ENUMPROCEX, DWORD, LPARAM, LPVOID);
++
++      HMODULE handle_kern32 = GetModuleHandleW(L"Kernel32.dll");
++      PfnEnumSystemLocalesEx enum_sys_locales_ex =
++          reinterpret_cast<PfnEnumSystemLocalesEx>
++              (GetProcAddress(handle_kern32, "EnumSystemLocalesEx"));
++
++      enum_sys_locales_ex(EnumLocalesProcEx, LOCALE_WINDOWS, 0, 0);
++    } else {
++      EnumSystemLocalesW(EnumLocalesProc, LCID_INSTALLED);
++    }
++  }
+ }
+ 
+ #endif
+diff --git a/device/gamepad/gamepad_platform_data_fetcher_win.cc b/device/gamepad/gamepad_platform_data_fetcher_win.cc
+index 2f2f7ac34b70f..42404e006f4df 100644
+--- a/device/gamepad/gamepad_platform_data_fetcher_win.cc
++++ b/device/gamepad/gamepad_platform_data_fetcher_win.cc
+@@ -68,10 +68,14 @@ const UChar* XInputDllFileName() {
+   // Xinput.h specifies it in build time. Approach here uses the same values
+   // and it is resolving dll filename based on Windows version it is running on.
+   if (base::win::GetVersion() >= base::win::VERSION_WIN8) {
+-    // For Windows 8+, XINPUT_DLL is xinput1_4.dll.
++    // For Windows 8 and 10, XINPUT_DLL is xinput1_4.dll.
+     return FILE_PATH_LITERAL("xinput1_4.dll");
++  } else if (base::win::GetVersion() >= base::win::VERSION_WIN7) {
++    return FILE_PATH_LITERAL("xinput9_1_0.dll");
++  } else {
++    NOTREACHED();
++    return nullptr;
+   }
+-  return FILE_PATH_LITERAL("xinput9_1_0.dll");
+ }
+ 
+ }  // namespace
+diff --git a/services/device/wake_lock/power_save_blocker/power_save_blocker_win.cc b/services/device/wake_lock/power_save_blocker/power_save_blocker_win.cc
+index 83830a7b2e8db..2d257224def39 100644
+--- a/services/device/wake_lock/power_save_blocker/power_save_blocker_win.cc
++++ b/services/device/wake_lock/power_save_blocker/power_save_blocker_win.cc
+@@ -17,10 +17,12 @@
+ namespace device {
+ namespace {
+ 
++int g_blocker_count[2];
++
+ HANDLE CreatePowerRequest(POWER_REQUEST_TYPE type,
+                           const std::string& description) {
+   if (type == PowerRequestExecutionRequired &&
+-      base::win::GetVersion() == base::win::VERSION_WIN7) {
++      base::win::GetVersion() < base::win::VERSION_WIN8) {
+     return INVALID_HANDLE_VALUE;
+   }
+ 
+@@ -49,7 +51,7 @@ void DeletePowerRequest(POWER_REQUEST_TYPE type, HANDLE handle) {
+     return;
+ 
+   if (type == PowerRequestExecutionRequired &&
+-      base::win::GetVersion() == base::win::VERSION_WIN7) {
++      base::win::GetVersion() < base::win::VERSION_WIN8) {
+     return;
+   }
+ 
+@@ -57,6 +59,30 @@ void DeletePowerRequest(POWER_REQUEST_TYPE type, HANDLE handle) {
+   DCHECK(success);
+ }
+ 
++void ApplySimpleBlock(mojom::WakeLockType type, int delta) {
++  g_blocker_count[(int)type] += delta;
++  DCHECK_GE(g_blocker_count[(int)type], 0);
++
++  if (g_blocker_count[(int)type] > 1)
++    return;
++
++  DWORD this_flag = 0;
++  if (type == mojom::WakeLockType::kPreventAppSuspension)
++    this_flag |= ES_SYSTEM_REQUIRED;
++  else
++    this_flag |= ES_DISPLAY_REQUIRED;
++
++  DCHECK(this_flag);
++
++  static DWORD flags = ES_CONTINUOUS;
++  if (!g_blocker_count[(int)type])
++    flags &= ~this_flag;
++  else
++    flags |= this_flag;
++
++  SetThreadExecutionState(flags);
++}
++
+ }  // namespace
+ 
+ class PowerSaveBlocker::Delegate
+@@ -90,11 +116,17 @@ class PowerSaveBlocker::Delegate
+ 
+ void PowerSaveBlocker::Delegate::ApplyBlock() {
+   DCHECK(ui_task_runner_->RunsTasksInCurrentSequence());
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return ApplySimpleBlock(type_, 1);
++
+   handle_.Set(CreatePowerRequest(RequestType(), description_));
+ }
+ 
+ void PowerSaveBlocker::Delegate::RemoveBlock() {
+   DCHECK(ui_task_runner_->RunsTasksInCurrentSequence());
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return ApplySimpleBlock(type_, -1);
++
+   DeletePowerRequest(RequestType(), handle_.Take());
+ }
+ 
+@@ -102,7 +134,7 @@ POWER_REQUEST_TYPE PowerSaveBlocker::Delegate::RequestType() {
+       type_ == mojom::WakeLockType::kPreventDisplaySleepAllowDimming)
+     return PowerRequestDisplayRequired;
+ 
+-  if (base::win::GetVersion() == base::win::VERSION_WIN7)
++  if (base::win::GetVersion() < base::win::VERSION_WIN8)
+     return PowerRequestSystemRequired;
+ 
+   return PowerRequestExecutionRequired;
+diff --git a/media/capture/video/win/video_capture_device_factory_win.cc b/media/capture/video/win/video_capture_device_factory_win.cc
+index c044c52e017f3..9b0712701fcc9 100644
+--- a/media/capture/video/win/video_capture_device_factory_win.cc
++++ b/media/capture/video/win/video_capture_device_factory_win.cc
+@@ -401,13 +402,19 @@ static void GetDeviceSupportedFormatsMediaFoundation(
+ // distributions such as Windows 7 N and Windows 7 KN.
+ // static
+ bool VideoCaptureDeviceFactoryWin::PlatformSupportsMediaFoundation() {
++  // Even though the DLLs might be available on Vista, we get crashes
++  // when running our tests on the build bots.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return false;
++
+   static bool g_dlls_available = LoadMediaFoundationDlls();
+   return g_dlls_available;
+ }
+ 
+ VideoCaptureDeviceFactoryWin::VideoCaptureDeviceFactoryWin()
+     : use_media_foundation_(
+-          base::FeatureList::IsEnabled(media::kMediaFoundationVideoCapture)),
++    base::win::GetVersion() >= base::win::VERSION_WIN7 &&
++          base::FeatureList::IsEnabled(media::kMediaFoundationVideoCapture)),
+       com_thread_("Windows Video Capture COM Thread"),
+       weak_ptr_factory_(this) {
+   mf_enum_device_sources_func_ =
+diff --git a/media/gpu/windows/dxva_video_decode_accelerator_win.cc b/media/gpu/windows/dxva_video_decode_accelerator_win.cc
+index c1f525db6d93c..5b863cceae2c8 100644
+--- a/media/gpu/windows/dxva_video_decode_accelerator_win.cc
++++ b/media/gpu/windows/dxva_video_decode_accelerator_win.cc
+@@ -1254,7 +1254,7 @@ void DXVAVideoDecodeAccelerator::PreSandboxInitialization() {
+     ::LoadLibrary(mfdll);
+   ::LoadLibrary(L"dxva2.dll");
+ 
+-  if (base::win::GetVersion() >= base::win::VERSION_WIN8) {
++  if (base::win::GetVersion() > base::win::VERSION_WIN7) {
+     LoadLibrary(L"msvproc.dll");
+   } else {
+ #if defined(ENABLE_DX11_FOR_WIN7)
+diff --git a/media/gpu/gpu_video_decode_accelerator_factory.cc b/media/gpu/gpu_video_decode_accelerator_factory.cc
+index e926ad640fc54..6b809fd81c843 100644
+--- a/media/gpu/gpu_video_decode_accelerator_factory.cc
++++ b/media/gpu/gpu_video_decode_accelerator_factory.cc
+@@ -182,10 +182,12 @@ GpuVideoDecodeAcceleratorFactory::CreateDXVAVDA(
+     const gpu::GpuPreferences& gpu_preferences,
+     MediaLog* media_log) const {
+   std::unique_ptr<VideoDecodeAccelerator> decoder;
+-  DVLOG(0) << "Initializing DXVA HW decoder for windows.";
+-  decoder.reset(new DXVAVideoDecodeAccelerator(
+-      get_gl_context_cb_, make_context_current_cb_, bind_image_cb_, workarounds,
+-      gpu_preferences, media_log));
++  if (base::win::GetVersion() >= base::win::VERSION_WIN7) {
++    DVLOG(0) << "Initializing DXVA HW decoder for windows.";
++    decoder.reset(new DXVAVideoDecodeAccelerator(
++        get_gl_context_cb_, make_context_current_cb_, bind_image_cb_, workarounds,
++        gpu_preferences, media_log));
++  }
+   return decoder;
+ }
+ #endif
+diff --git a/remoting/base/auto_thread_unittest.cc b/remoting/base/auto_thread_unittest.cc
+index 224b5057aee2f..a825753a1daf6 100644
+--- a/remoting/base/auto_thread_unittest.cc
++++ b/remoting/base/auto_thread_unittest.cc
+@@ -15,6 +15,7 @@
+ 
+ #if defined(OS_WIN)
+ #include <objbase.h>
++#include "base/win/windows_version.h"
+ #endif
+ 
+ namespace {
+@@ -36,6 +37,12 @@ void CheckComAptTypeTask(APTTYPE* apt_type_out, HRESULT* hresult) {
+   typedef HRESULT (WINAPI * CoGetApartmentTypeFunc)
+       (APTTYPE*, APTTYPEQUALIFIER*);
+ 
++  // CoGetApartmentType requires Windows 7 or above.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7) {
++    *hresult = E_NOTIMPL;
++    return;
++  }
++
+   // Dynamic link to the API so the same test binary can run on older systems.
+   base::ScopedNativeLibrary com_library(base::FilePath(L"ole32.dll"));
+   ASSERT_TRUE(com_library.is_valid());
+@@ -158,8 +165,13 @@ TEST_F(AutoThreadTest, ThreadWithComMta) {
+   task_runner = NULL;
+   RunMessageLoop();
+ 
+-  EXPECT_EQ(S_OK, hresult);
+-  EXPECT_EQ(APTTYPE_MTA, apt_type);
++  // CoGetApartmentType requires Windows 7 or above.
++  if (base::win::GetVersion() >= base::win::VERSION_WIN7) {
++    EXPECT_EQ(S_OK, hresult);
++    EXPECT_EQ(APTTYPE_MTA, apt_type);
++  } else {
++    EXPECT_EQ(E_NOTIMPL, hresult);
++  }
+ }
+ 
+ TEST_F(AutoThreadTest, ThreadWithComSta) {
+@@ -179,10 +191,15 @@ TEST_F(AutoThreadTest, ThreadWithComSta) {
+   task_runner = NULL;
+   RunMessageLoop();
+ 
+-  EXPECT_EQ(S_OK, hresult);
+-  // Whether the thread is the "main" STA apartment depends upon previous
+-  // COM activity in this test process, so allow both types here.
+-  EXPECT_TRUE(apt_type == APTTYPE_MAINSTA || apt_type == APTTYPE_STA);
++  // CoGetApartmentType requires Windows 7 or above.
++  if (base::win::GetVersion() >= base::win::VERSION_WIN7) {
++    EXPECT_EQ(S_OK, hresult);
++    // Whether the thread is the "main" STA apartment depends upon previous
++    // COM activity in this test process, so allow both types here.
++    EXPECT_TRUE(apt_type == APTTYPE_MAINSTA || apt_type == APTTYPE_STA);
++  } else {
++    EXPECT_EQ(E_NOTIMPL, hresult);
++  }
+ }
+ #endif // defined(OS_WIN)
+ 
+diff --git a/rlz/test/rlz_test_helpers.cc b/rlz/test/rlz_test_helpers.cc
+index c8d5000a995a3..2d4b6dd55e045 100644
+--- a/rlz/test/rlz_test_helpers.cc
++++ b/rlz/test/rlz_test_helpers.cc
+@@ -20,6 +20,7 @@
+ #if defined(OS_WIN)
+ #include "base/win/registry.h"
+ #include "base/win/shlwapi.h"
++#include "base/win/windows_version.h"
+ #elif defined(OS_POSIX)
+ #include "base/files/file_path.h"
+ #include "rlz/lib/rlz_value_store.h"
+@@ -99,26 +100,31 @@ void WriteRegistryTree(const RegistryKeyData& data, base::win::RegKey* dest) {
+ void InitializeRegistryOverridesForTesting(
+     registry_util::RegistryOverrideManager* override_manager) {
+   // For the moment, the HKCU hive requires no initialization.
++  const bool do_copy = (base::win::GetVersion() >= base::win::VERSION_WIN7);
+   RegistryKeyData data;
+ 
+-  // Copy the following HKLM subtrees to the temporary location so that the
+-  // win32 APIs used by the tests continue to work:
+-  //
+-  //    HKLM\System\CurrentControlSet\Control\Lsa\AccessProviders
+-  //
+-  // This seems to be required since Win7.
+-  ReadRegistryTree(base::win::RegKey(HKEY_LOCAL_MACHINE,
+-                                     kHKLMAccessProviders,
+-                                     KEY_READ), &data);
++  if (do_copy) {
++    // Copy the following HKLM subtrees to the temporary location so that the
++    // win32 APIs used by the tests continue to work:
++    //
++    //    HKLM\System\CurrentControlSet\Control\Lsa\AccessProviders
++    //
++    // This seems to be required since Win7.
++    ReadRegistryTree(base::win::RegKey(HKEY_LOCAL_MACHINE,
++                                       kHKLMAccessProviders,
++                                       KEY_READ), &data);
++  }
+ 
+   ASSERT_NO_FATAL_FAILURE(
+       override_manager->OverrideRegistry(HKEY_LOCAL_MACHINE));
+   ASSERT_NO_FATAL_FAILURE(
+       override_manager->OverrideRegistry(HKEY_CURRENT_USER));
+ 
+-  base::win::RegKey key(
+-      HKEY_LOCAL_MACHINE, kHKLMAccessProviders, KEY_ALL_ACCESS);
+-  WriteRegistryTree(data, &key);
++  if (do_copy) {
++    base::win::RegKey key(
++        HKEY_LOCAL_MACHINE, kHKLMAccessProviders, KEY_ALL_ACCESS);
++    WriteRegistryTree(data, &key);
++  }
+ }
+ 
+ }  // namespace
+diff --git a/ui/base/win/shell.cc b/ui/base/win/shell.cc
+index dd8459e9b2e10..0cace9bb1ce42 100644
+--- a/ui/base/win/shell.cc
++++ b/ui/base/win/shell.cc
+@@ -98,6 +99,10 @@ bool OpenFolderViaShell(const base::FilePath& full_path) {
+ bool PreventWindowFromPinning(HWND hwnd) {
+   DCHECK(hwnd);
+ 
++  // This functionality is only available on Win7+.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return false;
++
+   Microsoft::WRL::ComPtr<IPropertyStore> pps;
+   if (FAILED(
+           SHGetPropertyStoreForWindow(hwnd, IID_PPV_ARGS(pps.GetAddressOf()))))
+@@ -117,6 +122,10 @@ void SetAppDetailsForWindow(const base::string16& app_id,
+                             HWND hwnd) {
+   DCHECK(hwnd);
+ 
++  // This functionality is only available on Win7+.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   Microsoft::WRL::ComPtr<IPropertyStore> pps;
+   if (FAILED(
+           SHGetPropertyStoreForWindow(hwnd, IID_PPV_ARGS(pps.GetAddressOf()))))
+@@ -167,6 +176,10 @@ void SetRelaunchDetailsForWindow(const base::string16& relaunch_command,
+ void ClearWindowPropertyStore(HWND hwnd) {
+   DCHECK(hwnd);
+ 
++  // This functionality is only available on Win7+.
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   Microsoft::WRL::ComPtr<IPropertyStore> pps;
+   if (FAILED(
+           SHGetPropertyStoreForWindow(hwnd, IID_PPV_ARGS(pps.GetAddressOf()))))
+@@ -195,6 +208,10 @@ bool IsAeroGlassEnabled() {
+           switches::kDisableDwmComposition))
+     return false;
+ 
++  // Technically Aero glass works in Vista but we want to put XP and Vista
++  // at the same feature level. See bug 426573.
++  if (base::win::GetVersion() < base::win::VERSION_VISTA)
++    return false;
+   // If composition is not enabled, we behave like on XP.
+   return IsDwmCompositionEnabled();
+ }
+diff --git a/ui/events/blink/web_input_event_builders_win_unittest.cc b/ui/events/blink/web_input_event_builders_win_unittest.cc
+index 61837d0dbf7a6..f0a69e6d11adf 100644
+--- a/ui/events/blink/web_input_event_builders_win_unittest.cc
++++ b/ui/events/blink/web_input_event_builders_win_unittest.cc
+@@ -20,6 +20,9 @@ namespace ui {
+ // This test validates that Pixel to DIP conversion occurs as needed in the
+ // WebMouseEventBuilder::Build function.
+ TEST(WebInputEventBuilderTest, TestMouseEventScale) {
++  if (base::win::GetVersion() < base::win::VERSION_WIN7)
++    return;
++
+   display::Display::ResetForceDeviceScaleFactorForTesting();
+ 
+   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+diff --git a/ui/gl/vsync_provider_win.cc b/ui/gl/vsync_provider_win.cc
+index 8025ca9059a8f..7a400e2c2407b 100644
+--- a/ui/gl/vsync_provider_win.cc
++++ b/ui/gl/vsync_provider_win.cc
+@@ -8,10 +8,15 @@
+ 
+ #include "base/logging.h"
+ #include "base/trace_event/trace_event.h"
++#include "base/win/windows_version.h"
+ #include "ui/gfx/native_widget_types.h"
+ 
+ namespace gl {
+ 
++namespace {
++bool g_use_dwm_vsync;
++}  // namespace
++
+ VSyncProviderWin::VSyncProviderWin(gfx::AcceleratedWidget window)
+     : window_(window) {
+ }
+@@ -24,9 +29,12 @@ void VSyncProviderWin::InitializeOneOff() {
+   if (initialized)
+     return;
+   initialized = true;
++  g_use_dwm_vsync = (base::win::GetVersion() >= base::win::VERSION_WIN7);
+ 
+-  // Prewarm sandbox
+-  ::LoadLibrary(L"dwmapi.dll");
++  if (g_use_dwm_vsync) {
++    // Prewarm sandbox
++    ::LoadLibrary(L"dwmapi.dll");
++  }
+ }
+ 
+ void VSyncProviderWin::GetVSyncParameters(UpdateVSyncCallback callback) {
+@@ -34,54 +42,61 @@ void VSyncProviderWin::GetVSyncParameters(const UpdateVSyncCallback& callback) {
+ 
+   base::TimeTicks timebase;
+   base::TimeDelta interval;
++  bool dwm_active = false;
+ 
+   // Query the DWM timing info first if available. This will provide the most
+   // precise values.
+-  DWM_TIMING_INFO timing_info;
+-  timing_info.cbSize = sizeof(timing_info);
+-  HRESULT result = DwmGetCompositionTimingInfo(NULL, &timing_info);
+-  if (result == S_OK) {
+-    // Calculate an interval value using the rateRefresh numerator and
+-    // denominator.
+-    base::TimeDelta rate_interval;
+-    if (timing_info.rateRefresh.uiDenominator > 0 &&
+-        timing_info.rateRefresh.uiNumerator > 0) {
+-      // Swap the numerator/denominator to convert frequency to period.
+-      rate_interval = base::TimeDelta::FromMicroseconds(
+-          timing_info.rateRefresh.uiDenominator *
+-          base::Time::kMicrosecondsPerSecond /
+-          timing_info.rateRefresh.uiNumerator);
+-    }
++  if (g_use_dwm_vsync) {
++    DWM_TIMING_INFO timing_info;
++    timing_info.cbSize = sizeof(timing_info);
++    HRESULT result = DwmGetCompositionTimingInfo(NULL, &timing_info);
++    if (result == S_OK) {
++      dwm_active = true;
+ 
+-    if (base::TimeTicks::IsHighResolution()) {
+-      // qpcRefreshPeriod is very accurate but noisy, and must be used with
+-      // a high resolution timebase to avoid frequently missing Vsync.
+-      timebase = base::TimeTicks::FromQPCValue(
+-          static_cast<LONGLONG>(timing_info.qpcVBlank));
+-      interval = base::TimeDelta::FromQPCValue(
+-          static_cast<LONGLONG>(timing_info.qpcRefreshPeriod));
+-      // Check for interval values that are impossibly low. A 29 microsecond
+-      // interval was seen (from a qpcRefreshPeriod of 60).
+-      if (interval < base::TimeDelta::FromMilliseconds(1)) {
+-        interval = rate_interval;
++      // Calculate an interval value using the rateRefresh numerator and
++      // denominator.
++      base::TimeDelta rate_interval;
++      if (timing_info.rateRefresh.uiDenominator > 0 &&
++          timing_info.rateRefresh.uiNumerator > 0) {
++        // Swap the numerator/denominator to convert frequency to period.
++        rate_interval = base::TimeDelta::FromMicroseconds(
++            timing_info.rateRefresh.uiDenominator *
++            base::Time::kMicrosecondsPerSecond /
++            timing_info.rateRefresh.uiNumerator);
+       }
+-      // Check for the qpcRefreshPeriod interval being improbably small
+-      // compared to the rateRefresh calculated interval, as another
+-      // attempt at detecting driver bugs.
+-      if (!rate_interval.is_zero() && interval < rate_interval / 2) {
++
++      if (base::TimeTicks::IsHighResolution()) {
++        // qpcRefreshPeriod is very accurate but noisy, and must be used with
++        // a high resolution timebase to avoid frequently missing Vsync.
++        timebase = base::TimeTicks::FromQPCValue(
++            static_cast<LONGLONG>(timing_info.qpcVBlank));
++        interval = base::TimeDelta::FromQPCValue(
++            static_cast<LONGLONG>(timing_info.qpcRefreshPeriod));
++        // Check for interval values that are impossibly low. A 29 microsecond
++        // interval was seen (from a qpcRefreshPeriod of 60).
++        if (interval < base::TimeDelta::FromMilliseconds(1)) {
++          interval = rate_interval;
++        }
++        // Check for the qpcRefreshPeriod interval being improbably small
++        // compared to the rateRefresh calculated interval, as another
++        // attempt at detecting driver bugs.
++        if (!rate_interval.is_zero() && interval < rate_interval / 2) {
++          interval = rate_interval;
++        }
++      } else {
++        // If FrameTime is not high resolution, we do not want to translate
++        // the QPC value provided by DWM into the low-resolution timebase,
++        // which would be error prone and jittery. As a fallback, we assume
++        // the timebase is zero and use rateRefresh, which may be rounded but
++        // isn't noisy like qpcRefreshPeriod, instead. The fact that we don't
++        // have a timebase here may lead to brief periods of jank when our
++        // scheduling becomes offset from the hardware vsync.
+         interval = rate_interval;
+       }
+-    } else {
+-      // If FrameTime is not high resolution, we do not want to translate
+-      // the QPC value provided by DWM into the low-resolution timebase,
+-      // which would be error prone and jittery. As a fallback, we assume
+-      // the timebase is zero and use rateRefresh, which may be rounded but
+-      // isn't noisy like qpcRefreshPeriod, instead. The fact that we don't
+-      // have a timebase here may lead to brief periods of jank when our
+-      // scheduling becomes offset from the hardware vsync.
+-      interval = rate_interval;
+     }
+-  } else {
++  }
++
++  if (!dwm_active) {
+     // When DWM compositing is active all displays are normalized to the
+     // refresh rate of the primary display, and won't composite any faster.
+     // If DWM compositing is disabled, though, we can use the refresh rates
+diff --git a/ui/views/win/hwnd_message_handler.cc b/ui/views/win/hwnd_message_handler.cc
+index 4f9ad05241a7b..3c67457a6421c 100644
+--- a/ui/views/win/hwnd_message_handler.cc
++++ b/ui/views/win/hwnd_message_handler.cc
+@@ -1658,8 +1658,8 @@ LRESULT HWNDMessageHandler::OnPointerActivate(UINT message,
+ LRESULT HWNDMessageHandler::OnPointerEvent(UINT message,
+                                            WPARAM w_param,
+                                            LPARAM l_param) {
+-  // WM_POINTER is not supported on Windows 7.
+-  if (base::win::GetVersion() == base::win::VERSION_WIN7) {
++  // WM_POINTER is not supported on Windows 7 or lower.
++  if (base::win::GetVersion() <= base::win::VERSION_WIN7) {
+     SetMsgHandled(FALSE);
+     return -1;
+   }

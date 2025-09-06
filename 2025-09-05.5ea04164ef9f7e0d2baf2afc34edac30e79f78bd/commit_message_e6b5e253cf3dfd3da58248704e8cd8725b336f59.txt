@@ -1,0 +1,1 @@
+Save variables on stack to help determine why GPU watchdog is firing.    2016/3/17 11:25:04    e6b5e253cf3dfd3da58248704e8cd8725b336f59

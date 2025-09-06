@@ -1,0 +1,212 @@
+diff --git a/third_party/blink/renderer/platform/fonts/font_cache.cc b/third_party/blink/renderer/platform/fonts/font_cache.cc
+index 29b1841..7ecd3eb 100644
+--- a/third_party/blink/renderer/platform/fonts/font_cache.cc
++++ b/third_party/blink/renderer/platform/fonts/font_cache.cc
+@@ -78,6 +78,7 @@ SkFontMgr* FontCache::s_fontManager = nullptr;
+ #if defined(OS_WIN)
+ bool FontCache::antialiased_text_enabled_ = false;
+ bool FontCache::lcd_text_enabled_ = false;
++bool FontCache::s_useSubpixelPositioning = false;
+ bool FontCache::use_skia_font_fallback_ = false;
+ #endif  // defined(OS_WIN)
+ 
+diff --git a/third_party/blink/renderer/platform/fonts/font_cache.h b/third_party/blink/renderer/platform/fonts/font_cache.h
+index f56d8bd..0e12c9e 100644
+--- a/third_party/blink/renderer/platform/fonts/font_cache.h
++++ b/third_party/blink/renderer/platform/fonts/font_cache.h
+@@ -103,6 +103,7 @@ public:
+ #if defined(OS_WIN)
+   // TODO(https://crbug.com/808221) System font style configuration is not
+   // related to FontCache. Move it somewhere else, e.g. to WebThemeEngine.
++    bool useSubpixelPositioning() const { return s_useSubpixelPositioning; }
+   static bool AntialiasedTextEnabled() { return antialiased_text_enabled_; }
+   static bool LcdTextEnabled() { return lcd_text_enabled_; }
+   static void SetAntialiasedTextEnabled(bool enabled) {
+@@ -189,6 +190,7 @@ private:
+ #if defined(OS_WIN)
+   static bool antialiased_text_enabled_;
+   static bool lcd_text_enabled_;
++    static bool s_useSubpixelPositioning;
+   static HashMap<String, sk_sp<SkTypeface>, CaseFoldingHash>* sideloaded_fonts_;
+   // The system font metrics cache.
+   static AtomicString* menu_font_family_name_;
+diff --git a/third_party/blink/renderer/platform/fonts/font_platform_data.cc b/third_party/blink/renderer/platform/fonts/font_platform_data.cc
+index 209c675..d4ee06b 100644
+--- a/third_party/blink/renderer/platform/fonts/font_platform_data.cc
++++ b/third_party/blink/renderer/platform/fonts/font_platform_data.cc
+@@ -54,6 +54,7 @@ FontPlatformData::FontPlatformData(WTF::HashTableDeletedValueType)
+ #if defined(OS_WIN)
+       ,
+-      font_flags_(0)
++      font_flags_(0),
++      m_useSubpixelPositioning(false)
+ #endif
+ {
+ }
+@@ -75,6 +76,7 @@ FontPlatformData::FontPlatformData()
+ #if defined(OS_WIN)
+       ,
+-      font_flags_(0)
++      font_flags_(0),
++      m_useSubpixelPositioning(false)
+ #endif
+ {
+ }
+@@ -96,6 +98,7 @@ FontPlatformData::FontPlatformData(float size, bool syntheticBold, bool syntheti
+ #if defined(OS_WIN)
+       ,
+-      font_flags_(0)
++      font_flags_(0),
++      m_useSubpixelPositioning(false)
+ #endif
+ {
+ }
+@@ -118,6 +121,7 @@ FontPlatformData::FontPlatformData(const FontPlatformData& source)
+ #if defined(OS_WIN)
+       ,
+-      font_flags_(source.font_flags_)
++      font_flags_(source.font_flags_),
++      m_useSubpixelPositioning(source.m_useSubpixelPositioning)
+ #endif
+ {
+ }
+@@ -140,7 +144,8 @@ FontPlatformData::FontPlatformData(const FontPlatformData& src, float textSize)
+                                    float text_size,
+                                    bool synthetic_bold,
+                                    bool synthetic_italic,
+-                                   FontOrientation orientation)
++                                   FontOrientation orientation,
++                                   bool subpixelTextPosition)
+     : typeface_(typeface),
+ #if !defined(OS_WIN)
+       family_(family),
+@@ -163,27 +166,28 @@ FontPlatformData::FontPlatformData(PassRefPtr<SkTypeface> tf,
+ #if defined(OS_WIN)
+       ,
+-      font_flags_(0)
++      font_flags_(0),
++      m_useSubpixelPositioning(subpixelTextPosition)
+ #endif
+ {
+ #if !defined(OS_WIN) && !defined(OS_MACOSX)
+   style_ = WebFontRenderStyle::GetDefault();
+   auto system_style =
+       QuerySystemRenderStyle(family_, text_size_, typeface_->fontStyle());
+ 
+   // In web tests, ignore system preference for subpixel positioning,
+   // or explicitly disable if requested.
+   if (WebTestSupport::IsRunningWebTest()) {
+     system_style.use_subpixel_positioning =
+         WebTestSupport::IsTextSubpixelPositioningAllowedForTest()
+             ? WebFontRenderStyle::kNoPreference
+             : 0;
+   }
+ 
+   style_.OverrideWith(system_style);
+ #endif
+ 
+ #if defined(OS_WIN)
+-    QuerySystemForRenderStyle();
++    QuerySystemForRenderStyle(subpixelTextPosition);
+ #endif
+ }
+ 
+@@ -211,6 +215,7 @@ const FontPlatformData& FontPlatformData::operator=(const FontPlatformData& othe
+ 
+ #if defined(OS_WIN)
+   font_flags_ = 0;
++    m_useSubpixelPositioning = other.m_useSubpixelPositioning;
+ #endif
+ 
+     return *this;
+diff --git a/third_party/blink/renderer/platform/fonts/font_platform_data.h b/third_party/blink/renderer/platform/fonts/font_platform_data.h
+index 4e85939..b2e6253 100644
+--- a/third_party/blink/renderer/platform/fonts/font_platform_data.h
++++ b/third_party/blink/renderer/platform/fonts/font_platform_data.h
+@@ -84,7 +84,8 @@ public:
+                    float text_size,
+                    bool synthetic_bold,
+                    bool synthetic_italic,
+-                   FontOrientation = FontOrientation::kHorizontal);
++                   FontOrientation = FontOrientation::kHorizontal,
++                   bool subpixelTextPosition = defaultUseSubpixelPositioning());
+   ~FontPlatformData();
+ 
+ #if defined(OS_MACOSX)
+@@ -145,10 +145,11 @@ public:
+                                             float text_size,
+                                             SkFontStyle);
+ #endif
++    bool static defaultUseSubpixelPositioning();
+ #if defined(OS_WIN)
+   // TODO(https://crbug.com/808221): Remove and use QuerySystemRenderStyle()
+   // instead.
+-    void QuerySystemForRenderStyle();
++    void QuerySystemForRenderStyle(bool useSkiaSubpixelPositioning);
+ #endif
+ 
+   sk_sp<SkTypeface> typeface_;
+@@ -168,5 +169,6 @@ private:
+ #if defined(OS_WIN)
+   // TODO(https://crbug.com/808221): Replace |font_flags_| with |style_|.
+   int font_flags_;
++  bool m_useSubpixelPositioning;
+ #endif
+ };
+diff --git a/third_party/blink/renderer/platform/fonts/skia/font_cache_skia.cc b/third_party/blink/renderer/platform/fonts/skia/font_cache_skia.cc
+index 5d474693..aa866cd 100644
+--- a/third_party/blink/renderer/platform/fonts/skia/font_cache_skia.cc
++++ b/third_party/blink/renderer/platform/fonts/skia/font_cache_skia.cc
+@@ -216,7 +216,8 @@ PassOwnPtr<FontPlatformData> FontCache::createFontPlatformData(const FontDescrip
+           ((font_description.Style() == ItalicSlopeValue()) &&
+            !typeface->isItalic()) ||
+               font_description.IsSyntheticItalic(),
+-        font_description.Orientation());
++        font_description.Orientation(),
++        fontDescription.useSubpixelPositioning());
+ 
+   font_platform_data->SetAvoidEmbeddedBitmaps(
+       BitmapGlyphsBlacklist::AvoidEmbeddedBitmapsForTypeface(typeface.get()));
+diff --git a/third_party/blink/renderer/platform/fonts/win/font_cache_skia_win.cc b/third_party/blink/renderer/platform/fonts/win/font_cache_skia_win.cc
+index 731eb0a..eb36e26 100644
+--- a/third_party/blink/renderer/platform/fonts/win/font_cache_skia_win.cc
++++ b/third_party/blink/renderer/platform/fonts/win/font_cache_skia_win.cc
+@@ -101,6 +101,9 @@ FontCache::FontCache()
+     // production code. crbug.com/561873
+     is_test_font_mgr_ = true;
+   }
++
++  s_useSubpixelPositioning = true;
++
+   DCHECK(font_manager_.get());
+ }
+ 
+@@ -398,7 +401,8 @@ PassOwnPtr<FontPlatformData> FontCache::createFontPlatformData(const FontDescrip
+       ((font_description.Style() == ItalicSlopeValue()) &&
+        !typeface->isItalic()) ||
+           font_description.IsSyntheticItalic(),
+-        font_description.Orientation());
++        font_description.Orientation(),
++        s_useSubpixelPositioning);
+ 
+   result->SetAvoidEmbeddedBitmaps(
+       BitmapGlyphsBlacklist::AvoidEmbeddedBitmapsForTypeface(typeface.get()));
+diff --git a/third_party/blink/renderer/platform/fonts/win/font_platform_data_win.cc b/third_party/blink/renderer/platform/fonts/win/font_platform_data_win.cc
+index 285cb0b..9e7e6c04 100644
+--- a/third_party/blink/renderer/platform/fonts/win/font_platform_data_win.cc
++++ b/third_party/blink/renderer/platform/fonts/win/font_platform_data_win.cc
+@@ -116,8 +117,13 @@ static int computePaintTextFlags(String fontFamilyName)
+   return font_flags;
+ }
+ 
+-void FontPlatformData::QuerySystemForRenderStyle() {
++void FontPlatformData::QuerySystemForRenderStyle(bool) {
+   font_flags_ = ComputeFontFlags(FontFamilyName());
+ }
+ 
++bool FontPlatformData::defaultUseSubpixelPositioning()
++{
++    return FontCache::GetFontCache()->useSubpixelPositioning();
++}
++
+ } // namespace blink

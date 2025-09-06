@@ -1,0 +1,33 @@
+diff --git a/content/browser/utility_process_host.cc b/content/browser/utility_process_host.cc
+index a17f803d6c627..8401b7c4665fd 100644
+--- a/content/browser/utility_process_host.cc
++++ b/content/browser/utility_process_host.cc
+@@ -102,10 +102,6 @@ class UtilitySandboxedProcessLauncherDelegate
+ 
+   bool DisableDefaultPolicy() override {
+     switch (sandbox_type_) {
+-      case service_manager::SANDBOX_TYPE_AUDIO:
+-        // Default policy is disabled for audio process to allow audio drivers
+-        // to read device properties (https://crbug.com/883326).
+-        return true;
+       case service_manager::SANDBOX_TYPE_NETWORK:
+         // Default policy is disabled for network process to allow incremental
+         // sandbox mitigations to be applied via experiments.
+diff --git a/services/audio/audio_sandbox_win.cc b/services/audio/audio_sandbox_win.cc
+index 9285b49a799de..c47e0841d82e4 100644
+--- a/services/audio/audio_sandbox_win.cc
++++ b/services/audio/audio_sandbox_win.cc
+@@ -43,13 +43,6 @@ bool AudioPreSpawnTarget(sandbox::TargetPolicy* policy) {
+   policy->SetTokenLevel(sandbox::USER_RESTRICTED_SAME_ACCESS,
+                         sandbox::USER_NON_ADMIN);
+   policy->SetDelayedIntegrityLevel(sandbox::INTEGRITY_LEVEL_LOW);
+-
+-  // Custom default policy allowing audio drivers to read device properties
+-  // (https://crbug.com/883326).
+-  policy->SetIntegrityLevel(sandbox::INTEGRITY_LEVEL_LOW);
+-  policy->SetLockdownDefaultDacl();
+-  policy->SetAlternateDesktop(true);
+-
+   return true;
+ }
+ 

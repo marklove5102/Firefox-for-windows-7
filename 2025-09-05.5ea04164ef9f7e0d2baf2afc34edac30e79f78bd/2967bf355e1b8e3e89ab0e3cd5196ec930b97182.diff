@@ -1,0 +1,22 @@
+diff --git a/third_party/libaom/source/libaom/aom_util/aom_thread.h b/third_party/libaom/source/libaom/aom_util/aom_thread.h
+index 0ae8f2f49d..59f5dc9593 100644
+--- a/third_party/libaom/source/libaom/aom_util/aom_thread.h
++++ b/third_party/libaom/source/libaom/aom_util/aom_thread.h
+@@ -36,7 +36,7 @@ extern "C" {
+ typedef HANDLE pthread_t;
+ typedef CRITICAL_SECTION pthread_mutex_t;
+ 
+-#if _WIN32_WINNT >= 0x0600  // Windows Vista / Server 2008 or greater
++#if 0
+ #define USE_WINDOWS_CONDITION_VARIABLE
+ typedef CONDITION_VARIABLE pthread_cond_t;
+ #else
+@@ -98,7 +98,7 @@ static INLINE int pthread_join(pthread_t thread, void **value_ptr) {
+ static INLINE int pthread_mutex_init(pthread_mutex_t *const mutex,
+                                      void *mutexattr) {
+   (void)mutexattr;
+-#if _WIN32_WINNT >= 0x0600  // Windows Vista / Server 2008 or greater
++#if 0
+   InitializeCriticalSectionEx(mutex, 0 /*dwSpinCount*/, 0 /*Flags*/);
+ #else
+   InitializeCriticalSection(mutex);

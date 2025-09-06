@@ -1,0 +1,126 @@
+diff --git a/third_party/blink/renderer/platform/text/locale_win.cc b/third_party/blink/renderer/platform/text/locale_win.cc
+index 8c400713886a0..121ca52e1bc77 100644
+--- a/third_party/blink/renderer/platform/text/locale_win.cc
++++ b/third_party/blink/renderer/platform/text/locale_win.cc
+@@ -46,6 +46,9 @@
+ 
+ namespace blink {
+ 
++typedef LCID (WINAPI* LocaleNameToLCIDPtr)(LPCWSTR, DWORD);
++typedef HashMap<String, LCID> NameToLCIDMap;
++
+ static String ExtractLanguageCode(const String& locale) {
+   size_t dash_position = locale.find('-');
+   if (dash_position == kNotFound)
+@@ -54,38 +57,102 @@ static String extractLanguageCode(const String& locale)
+     return locale.Left(dash_position);
+ }
+ 
+-static LCID LCIDFromLocaleInternal(LCID user_default_lcid,
+-                                   const String& user_default_language_code,
+-                                   const String& locale) {
++static String removeLastComponent(const String& name)
++{
++    size_t lastSeparator = name.ReverseFind('-');
++    if (lastSeparator == kNotFound)
++        return g_empty_string;
++    return name.Left(lastSeparator);
++}
++
++static void ensureNameToLCIDMap(NameToLCIDMap& map)
++{
++    if (!map.IsEmpty())
++        return;
++    // http://www.microsoft.com/resources/msdn/goglobal/default.mspx
++    // We add only locales used in layout tests for now.
++    map.insert("ar", 0x0001);
++    map.insert("ar-eg", 0x0C01);
++    map.insert("de", 0x0007);
++    map.insert("de-de", 0x0407);
++    map.insert("el", 0x0008);
++    map.insert("el-gr", 0x0408);
++    map.insert("en", 0x0009);
++    map.insert("en-gb", 0x0809);
++    map.insert("en-us", 0x0409);
++    map.insert("fr", 0x000C);
++    map.insert("fr-fr", 0x040C);
++    map.insert("he", 0x000D);
++    map.insert("he-il", 0x040D);
++    map.insert("hi", 0x0039);
++    map.insert("hi-in", 0x0439);
++    map.insert("ja", 0x0011);
++    map.insert("ja-jp", 0x0411);
++    map.insert("ko", 0x0012);
++    map.insert("ko-kr", 0x0412);
++    map.insert("ru", 0x0019);
++    map.insert("ru-ru", 0x0419);
++    map.insert("zh-cn", 0x0804);
++    map.insert("zh-tw", 0x0404);
++}
++
++// Fallback implementation of LocaleNameToLCID API. This is used for
++// testing on Windows XP.
++// FIXME: Remove this, ensureNameToLCIDMap, and removeLastComponent when we drop
++// Windows XP support.
++static LCID WINAPI convertLocaleNameToLCID(LPCWSTR name, DWORD)
++{
++    if (!name || !name[0])
++        return LOCALE_USER_DEFAULT;
++    DEFINE_STATIC_LOCAL(NameToLCIDMap, map, ());
++    ensureNameToLCIDMap(map);
++    String localeName = String(name).Replace('_', '-');
++    localeName = localeName.DeprecatedLower();
++    do {
++        NameToLCIDMap::const_iterator iterator = map.find(localeName);
++        if (iterator != map.end())
++            return iterator->value;
++        localeName = removeLastComponent(localeName);
++    } while (!localeName.IsEmpty());
++    return LOCALE_USER_DEFAULT;
++}
++
++static LCID LCIDFromLocaleInternal(LCID user_default_lcid,
++                                   const String& user_default_language_code,
++                                   LocaleNameToLCIDPtr localeNameToLCID,
++                                   const String& locale) {
+   String locale_language_code = ExtractLanguageCode(locale);
+   if (DeprecatedEqualIgnoringCase(locale_language_code,
+                                   user_default_language_code))
+     return user_default_lcid;
+   if (locale.length() >= LOCALE_NAME_MAX_LENGTH)
+     return 0;
+   UChar buffer[LOCALE_NAME_MAX_LENGTH];
+   if (locale.Is8Bit())
+     StringImpl::CopyChars(buffer, locale.Characters8(), locale.length());
+   else
+     StringImpl::CopyChars(buffer, locale.Characters16(), locale.length());
+   buffer[locale.length()] = '\0';
+-    return ::LocaleNameToLCID(buffer, 0);
++    return localeNameToLCID(buffer, 0);
+ }
+ 
+ static LCID LCIDFromLocale(const String& locale, bool defaults_for_locale) {
++    // LocaleNameToLCID() is available since Windows Vista.
++    LocaleNameToLCIDPtr localeNameToLCID = reinterpret_cast<LocaleNameToLCIDPtr>(::GetProcAddress(::GetModuleHandle(L"kernel32"), "LocaleNameToLCID"));
++    if (!localeNameToLCID)
++        localeNameToLCID = convertLocaleNameToLCID;
++
+   // According to MSDN, 9 is enough for LOCALE_SISO639LANGNAME.
+   const size_t kLanguageCodeBufferSize = 9;
+   WCHAR lowercase_language_code[kLanguageCodeBufferSize];
+   ::GetLocaleInfo(LOCALE_USER_DEFAULT,
+                   LOCALE_SISO639LANGNAME |
+                       (defaults_for_locale ? LOCALE_NOUSEROVERRIDE : 0),
+                   lowercase_language_code, kLanguageCodeBufferSize);
+   String user_default_language_code = String(lowercase_language_code);
+ 
+-  LCID lcid = LCIDFromLocaleInternal(LOCALE_USER_DEFAULT,
+-                                     user_default_language_code, locale);
++    LCID lcid = LCIDFromLocaleInternal(LOCALE_USER_DEFAULT, user_default_language_code, localeNameToLCID, locale);
+     if (!lcid)
+-    lcid = LCIDFromLocaleInternal(
+-        LOCALE_USER_DEFAULT, user_default_language_code, DefaultLanguage());
++        lcid = LCIDFromLocaleInternal(LOCALE_USER_DEFAULT, user_default_language_code, localeNameToLCID, DefaultLanguage());
+     return lcid;
+ }
+ 
