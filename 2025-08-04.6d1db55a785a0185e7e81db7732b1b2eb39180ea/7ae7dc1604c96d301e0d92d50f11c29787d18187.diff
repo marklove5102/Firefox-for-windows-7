@@ -2,17 +2,15 @@ diff --git a/security/sandbox/chromium/sandbox/win/src/broker_services.cc b/secu
 index 58c24c12f24b1..16a7c3dbac024 100644
 --- a/security/sandbox/chromium/sandbox/win/src/broker_services.cc
 +++ b/security/sandbox/chromium/sandbox/win/src/broker_services.cc
-@@ -546,7 +546,10 @@ ResultCode BrokerServicesBase::SpawnTarget(const wchar_t* exe_path,
-   if (container)
-     startup_info->SetAppContainer(container);
- 
+@@ -546,6 +546,8 @@ ResultCode BrokerServicesBase::SpawnTarget(const wchar_t* exe_path,
+   // TODO(crbug.com/1428756) remove all calls to HasJob in follow-up CLs.
+   DCHECK(policy_base->HasJob());
+
 +  // On Win10, jobs are associated via startup_info.
-+  if (base::win::GetVersion() >= base::win::Version::WIN10 &&
-+      policy_base->HasJob())
-   startup_info->AddJobToAssociate(policy_base->GetJobHandle());
++  if (base::win::GetVersion() >= base::win::Version::WIN10)
+   if (policy_base->HasJob())
+     startup_info->AddJobToAssociate(policy_base->GetJobHandle());
  
-   if (!startup_info->BuildStartupInformation())
-     return SBOX_ERROR_PROC_THREAD_ATTRIBUTES;
 @@ -563,7 +566,7 @@ ResultCode BrokerServicesBase::SpawnTarget(const wchar_t* exe_path,
   // Brokerservices does not own the target object. It is owned by the Policy.
   base::win::ScopedProcessInformation process_info;
