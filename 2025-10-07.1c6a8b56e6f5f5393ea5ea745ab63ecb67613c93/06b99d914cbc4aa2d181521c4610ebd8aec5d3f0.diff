@@ -1,0 +1,65 @@
+diff --git a/toolkit/crashreporter/crash_helper_client/src/lib.rs b/toolkit/crashreporter/crash_helper_client/src/lib.rs
+index a38ef6ade302..a9b379b54e08 100644
+--- a/toolkit/crashreporter/crash_helper_client/src/lib.rs
++++ b/toolkit/crashreporter/crash_helper_client/src/lib.rs
+@@ -64,17 +64,12 @@ impl CrashHelperClient {
+             bail!("The crash helper process is not available");
+         };
+ 
+-        // The endpoint will be sent to the crash helper process (and essentially dup'd on unix),
+-        // so we have to retain ownership of the server_endpoint using `as_ancillary()` until the
+-        // message is sent.
+-        let Ok(ancillary_data) = server_endpoint.as_ancillary(&self.helper_process) else {
++        let Ok(ancillary_data) = server_endpoint.into_ancillary(&self.helper_process) else {
+             bail!("Could not convert the server IPC endpoint");
+         };
+ 
+         let message = messages::RegisterChildProcess::new(ancillary_data);
+         self.connector.send_message(&message)?;
+-        // We use `into_ancillary()` because the returned fd will stay in this process (so we don't
+-        // want to close it).
+         let Ok(ancillary_data) = client_endpoint.into_ancillary(/* dst_process */ &None) else {
+             bail!("Could not convert the local IPC endpoint");
+         };
+diff --git a/toolkit/crashreporter/crash_helper_common/src/ipc_connector/windows.rs b/toolkit/crashreporter/crash_helper_common/src/ipc_connector/windows.rs
+index da179054b3c3..8852b73a7e0d 100644
+--- a/toolkit/crashreporter/crash_helper_common/src/ipc_connector/windows.rs
++++ b/toolkit/crashreporter/crash_helper_common/src/ipc_connector/windows.rs
+@@ -213,37 +213,6 @@ impl IPCConnector {
+         }
+     }
+ 
+-    /// Like into_ancillary, but the IPCConnector retains ownership of the file descriptor (so be
+-    /// sure to use the result during the lifetime of the IPCConnector).
+-    pub fn as_ancillary(
+-        &self,
+-        dst_process: &Option<ProcessHandle>,
+-    ) -> Result<AncillaryData, IPCError> {
+-        let mut dst_handle: HANDLE = INVALID_ANCILLARY_DATA;
+-
+-        if let Some(dst_process) = dst_process.as_ref() {
+-            let res = unsafe {
+-                DuplicateHandle(
+-                    GetCurrentProcess(),
+-                    self.handle.as_raw_handle() as HANDLE,
+-                    dst_process.as_raw_handle() as HANDLE,
+-                    &mut dst_handle,
+-                    /* dwDesiredAccess */ 0,
+-                    /* bInheritHandle */ FALSE,
+-                    DUPLICATE_SAME_ACCESS,
+-                )
+-            };
+-
+-            if res > 0 {
+-                Ok(dst_handle)
+-            } else {
+-                Err(IPCError::System(get_last_error()))
+-            }
+-        } else {
+-            Ok(self.handle.as_raw_handle() as HANDLE)
+-        }
+-    }
+-
+     pub fn send_message(&self, message: &dyn Message) -> Result<(), IPCError> {
+         // Send the message header
+         self.send(&message.header(), None)?;

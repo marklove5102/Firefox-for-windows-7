@@ -1,0 +1,1 @@
+Bug 1979075 - Collect Glean data directory info before init.r=chutten    2025-08-08 19:53:29    f92b009836c044468046c727ceecde6d558ce813
