@@ -87,6 +87,7 @@ Windows 7, 8, 10, 11 or Windows Vista with Service Pack 2 (SP2) and Platform Upd
      ac_add_options MOZ_TELEMETRY_REPORTING=1
      ac_add_options --with-redist=<CRT_LOCATION>
      export WIN_UCRT_REDIST_DIR=<UCRT_LOCATION>
+     ac_add_options --disable-crashreporter
      ac_add_options --disable-sandbox
      ac_add_options --target=i686-pc-windows-msvc
      ac_add_options --enable-optimize
@@ -97,13 +98,14 @@ Windows 7, 8, 10, 11 or Windows Vista with Service Pack 2 (SP2) and Platform Upd
      ac_add_options --enable-js-shell
      ac_add_options --enable-rust-simd
      ```
-
+   
    - mozconfig for x86_64-pc-windows-msvc:
-
+   
      ```bash
      ac_add_options MOZ_TELEMETRY_REPORTING=1
      ac_add_options --with-redist=<CRT_LOCATION>
      export WIN_UCRT_REDIST_DIR=<UCRT_LOCATION>
+     ac_add_options --disable-crashreporter
      ac_add_options --target=x86_64-pc-windows-msvc
      ac_add_options --enable-optimize
      ac_add_options --disable-tests
@@ -113,7 +115,7 @@ Windows 7, 8, 10, 11 or Windows Vista with Service Pack 2 (SP2) and Platform Upd
      ac_add_options --enable-js-shell
      ac_add_options --enable-rust-simd
      ```
-
+   
    - ```bash
      ./mach build
      ./mach package
