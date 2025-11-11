@@ -1,0 +1,84 @@
+diff --git a/ipc/glue/GeckoChildProcessHost.cpp b/ipc/glue/GeckoChildProcessHost.cpp
+index c23c0be0202e..8445a6340fb6 100644
+--- a/ipc/glue/GeckoChildProcessHost.cpp
++++ b/ipc/glue/GeckoChildProcessHost.cpp
+@@ -1135,11 +1135,11 @@ Result<Ok, LaunchError> BaseProcessLauncher::DoSetup() {
+ 
+     UniqueFileHandle crashHelperClientFd =
+         CrashReporter::RegisterChildIPCChannel();
+-    if (crashHelperClientFd) {
+-      geckoargs::sCrashHelper.Put(std::move(crashHelperClientFd), mChildArgs);
+-    } else {
+-      NS_WARNING("Could not create an IPC channel to the crash helper");
++    if (!crashHelperClientFd) {
++      return Err(
++          LaunchError("Could not create an IPC channel to the crash helper"));
+     }
++    geckoargs::sCrashHelper.Put(std::move(crashHelperClientFd), mChildArgs);
+   }
+ 
+   return Ok();
+diff --git a/toolkit/crashreporter/crash_helper_client/src/lib.rs b/toolkit/crashreporter/crash_helper_client/src/lib.rs
+index a9b379b54e08..5a83a5ccab73 100644
+--- a/toolkit/crashreporter/crash_helper_client/src/lib.rs
++++ b/toolkit/crashreporter/crash_helper_client/src/lib.rs
+@@ -412,7 +412,6 @@ pub unsafe extern "C" fn crash_helper_rendezvous(client_endpoint: AncillaryData)
+                     .is_ok(),
+                 "The crash_helper_rendezvous() function must only be called once"
+             );
+-            return;
+         }
+ 
+         RENDEZVOUS_FAILED.store(true, Ordering::Relaxed);
+diff --git a/toolkit/crashreporter/crash_helper_server/src/ipc_server/windows.rs b/toolkit/crashreporter/crash_helper_server/src/ipc_server/windows.rs
+index fa0d93495cca..87ad0b548cb1 100644
+--- a/toolkit/crashreporter/crash_helper_server/src/ipc_server/windows.rs
++++ b/toolkit/crashreporter/crash_helper_server/src/ipc_server/windows.rs
+@@ -5,9 +5,8 @@
+ use std::convert::TryInto;
+ 
+ use crash_helper_common::{errors::IPCError, IPCEvent};
+-use log::error;
+ use windows_sys::Win32::{
+-    Foundation::{ERROR_BROKEN_PIPE, FALSE, HANDLE, WAIT_OBJECT_0},
++    Foundation::{ERROR_BROKEN_PIPE, ERROR_INVALID_PARAMETER, FALSE, HANDLE, WAIT_OBJECT_0},
+     System::{
+         SystemServices::MAXIMUM_WAIT_OBJECTS,
+         Threading::{WaitForMultipleObjects, INFINITE},
+@@ -26,6 +25,10 @@ impl IPCServer {
+ 
+         let native_events = self.collect_events();
+ 
++        if native_events.len() > MAXIMUM_WAIT_OBJECTS as usize {
++            return Err(IPCError::WaitingFailure(Some(ERROR_INVALID_PARAMETER)));
++        }
++
+         // SAFETY: This is less than MAXIMUM_WAIT_OBJECTS
+         let native_events_len: u32 = unsafe { native_events.len().try_into().unwrap_unchecked() };
+ 
+@@ -71,9 +74,6 @@ impl IPCServer {
+         Ok(events)
+     }
+ 
+-    /// This currently returns a vector that is no longer than
+-    /// `MAXIMUM_WAIT_OBJECTS`, so its contents can be safely passed to
+-    /// a `WaitForMultipleObjects()` call.
+     fn collect_events(&self) -> Vec<HANDLE> {
+         let mut events = Vec::with_capacity(1 + self.connections.len());
+ 
+@@ -82,15 +82,6 @@ impl IPCServer {
+             events.push(connection.connector.event_raw_handle());
+         }
+ 
+-        // HACK: When we hit this limit we should be splitting this list in
+-        // multiple groups of at most MAXIMUM_WAIT_OBJECTS objects and have
+-        // several threads wait on the groups, then wait on the threads
+-        // themselves.
+-        if events.len() > MAXIMUM_WAIT_OBJECTS.try_into().unwrap() {
+-            error!("More than {MAXIMUM_WAIT_OBJECTS} processes connecting to the crash helper");
+-            events.truncate(MAXIMUM_WAIT_OBJECTS.try_into().unwrap());
+-        }
+-
+         events
+     }
+ }
