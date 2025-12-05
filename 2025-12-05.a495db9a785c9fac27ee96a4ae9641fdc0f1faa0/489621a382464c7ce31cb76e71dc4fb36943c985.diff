@@ -845,7 +845,7 @@ index 000000000000..966940ef57bd
 +  if (mFontType != GFX_FONT_TYPE_PS_OPENTYPE &&
 +      mFontType != GFX_FONT_TYPE_TT_OPENTYPE &&
 +      mFontType != GFX_FONT_TYPE_TRUETYPE) {
-+    RefPtr<gfxCharacterMap> cmap = new gfxCharacterMap();
++    RefPtr<gfxCharacterMap> cmap = new gfxCharacterMap(0);
 +    cmap->mBuildOnTheFly = true;
 +    if (mCharacterMap.compareExchange(nullptr, cmap.get())) {
 +      (void)cmap.forget();
@@ -862,7 +862,7 @@ index 000000000000..966940ef57bd
 +    rv = NS_OK;
 +  } else {
 +    uint32_t kCMAP = TRUETYPE_TAG('c', 'm', 'a', 'p');
-+    charmap = new gfxCharacterMap();
++    charmap = new gfxCharacterMap(0);
 +    AutoTArray<uint8_t, 16384> cmap;
 +    rv = CopyFontTable(kCMAP, cmap);
 +
@@ -878,7 +878,7 @@ index 000000000000..966940ef57bd
 +    mHasCmapTable = true;
 +  } else {
 +    // if error occurred, initialize to null cmap
-+    charmap = new gfxCharacterMap();
++    charmap = new gfxCharacterMap(0);
 +    // For fonts where we failed to read the character map,
 +    // we can take a slow path to look up glyphs character by character
 +    charmap->mBuildOnTheFly = true;
@@ -1721,7 +1721,7 @@ index 000000000000..966940ef57bd
 +    if (cmapSize != GDI_ERROR && cmapSize > 0 &&
 +        cmapData.SetLength(cmapSize, fallible)) {
 +      ::GetFontData(hdc, kCMAP, 0, cmapData.Elements(), cmapSize);
-+      RefPtr<gfxCharacterMap> charmap = new gfxCharacterMap();
++      RefPtr<gfxCharacterMap> charmap = new gfxCharacterMap(0);
 +      uint32_t offset;
 +
 +      if (NS_SUCCEEDED(gfxFontUtils::ReadCMAP(cmapData.Elements(), cmapSize,
