@@ -11,6 +11,8 @@ Windows 7, 8, 10, 11 or Windows Vista with Service Pack 2 (SP2) and Platform Upd
 
 ![](imgs/snapshot.png)
 
+To replace the browser icon with the Fox icon, see: https://github.com/e3kskoy7wqk/Firefox-for-windows-7/discussions/110
+
 ## Building
 
 1. Bootstrap a copy of the Firefox source code
