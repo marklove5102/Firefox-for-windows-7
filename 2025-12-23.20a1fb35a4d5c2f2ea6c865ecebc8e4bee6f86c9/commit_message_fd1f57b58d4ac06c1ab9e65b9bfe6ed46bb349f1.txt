@@ -1,0 +1,1 @@
+Bug 1873301 - Remove nsHTMLButtonControlFrame. r=dholbert,layout-reviewers,dshin    2025-07-15 19:01:26    fd1f57b58d4ac06c1ab9e65b9bfe6ed46bb349f1
