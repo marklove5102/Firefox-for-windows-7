@@ -1,0 +1,288 @@
+diff --git a/layout/generic/nsIFrame.cpp b/layout/generic/nsIFrame.cpp
+index ae3986744f1c..a06ad1e9e30c 100644
+--- a/layout/generic/nsIFrame.cpp
++++ b/layout/generic/nsIFrame.cpp
+@@ -1983,6 +1983,16 @@ RubyMetrics nsIFrame::RubyMetrics(float aRubyMetricsFactor) const {
+       nscoord(NS_round(fm->TrimmedDescent() * aRubyMetricsFactor))};
+ }
+ 
++ComputedStyle* nsIFrame::GetAdditionalComputedStyle(int32_t aIndex) const {
++  MOZ_ASSERT(aIndex >= 0, "invalid index number");
++  return nullptr;
++}
++
++void nsIFrame::SetAdditionalComputedStyle(int32_t aIndex,
++                                          ComputedStyle* aComputedStyle) {
++  MOZ_ASSERT(aIndex >= 0, "invalid index number");
++}
++
+ nscoord nsIFrame::SynthesizeFallbackBaseline(
+     WritingMode aWM, BaselineSharingGroup aBaselineGroup) const {
+   const auto margin = GetLogicalUsedMargin(aWM);
+@@ -11694,6 +11704,9 @@ nsChangeHint nsIFrame::UpdateStyleOfOwnedChildFrame(
+     nsIFrame* aChildFrame, ComputedStyle* aNewComputedStyle,
+     ServoRestyleState& aRestyleState,
+     const Maybe<ComputedStyle*>& aContinuationComputedStyle) {
++  MOZ_ASSERT(!aChildFrame->GetAdditionalComputedStyle(0),
++             "We don't handle additional styles here");
++
+   // Figure out whether we have an actual change.  It's important that we do
+   // this, for several reasons:
+   //
+@@ -11732,6 +11745,7 @@ nsChangeHint nsIFrame::UpdateStyleOfOwnedChildFrame(
+                                          : aNewComputedStyle;
+   for (nsIFrame* kid = aChildFrame->GetNextContinuation(); kid;
+        kid = kid->GetNextContinuation()) {
++    MOZ_ASSERT(!kid->GetAdditionalComputedStyle(0));
+     kid->SetComputedStyle(continuationStyle);
+   }
+ 
+@@ -12050,6 +12064,15 @@ void nsIFrame::AddSizeOfExcludingThisForTree(nsWindowSizes& aSizes) const {
+                                            &aSizes.mLayoutComputedValuesNonDom);
+   }
+ 
++  // And our additional styles.
++  int32_t index = 0;
++  while (auto* extra = GetAdditionalComputedStyle(index++)) {
++    if (!aSizes.mState.HaveSeenPtr(extra)) {
++      extra->AddSizeOfIncludingThis(aSizes,
++                                    &aSizes.mLayoutComputedValuesNonDom);
++    }
++  }
++
+   for (const auto& childList : ChildLists()) {
+     for (const nsIFrame* f : childList.mList) {
+       f->AddSizeOfExcludingThisForTree(aSizes);
+diff --git a/layout/generic/nsIFrame.h b/layout/generic/nsIFrame.h
+index 33c9885db23c..8233e2f4fbab 100644
+--- a/layout/generic/nsIFrame.h
++++ b/layout/generic/nsIFrame.h
+@@ -1012,6 +1012,25 @@ class nsIFrame : public nsQueryFrame {
+     return mComputedStyle->GetVisitedDependentColor(aField);
+   }
+ 
++  /**
++   * These methods are to access any additional ComputedStyles that
++   * the frame may be holding.
++   *
++   * These are styles that are children of the frame's primary style and are NOT
++   * used as styles for any child frames.
++   *
++   * These contexts also MUST NOT have any child styles whatsoever. If you need
++   * to insert styles into the style tree, then you should create pseudo element
++   * frames to own them.
++   *
++   * The indicies must be consecutive and implementations MUST return null if
++   * asked for an index that is out of range.
++   */
++  virtual ComputedStyle* GetAdditionalComputedStyle(int32_t aIndex) const;
++
++  virtual void SetAdditionalComputedStyle(int32_t aIndex,
++                                          ComputedStyle* aComputedStyle);
++
+   /**
+    * @param aSelectionStatus nsISelectionController::getDisplaySelection.
+    */
+diff --git a/layout/mathml/nsMathMLChar.cpp b/layout/mathml/nsMathMLChar.cpp
+index 402bc351f445..caec0533e5c2 100644
+--- a/layout/mathml/nsMathMLChar.cpp
++++ b/layout/mathml/nsMathMLChar.cpp
+@@ -444,6 +444,11 @@ already_AddRefed<gfxTextRun> nsOpenTypeTable::MakeTextRun(
+ 
+ nsMathMLChar::~nsMathMLChar() { MOZ_COUNT_DTOR(nsMathMLChar); }
+ 
++ComputedStyle* nsMathMLChar::GetComputedStyle() const {
++  NS_ASSERTION(mComputedStyle, "chars should always have a ComputedStyle");
++  return mComputedStyle;
++}
++
+ void nsMathMLChar::SetComputedStyle(ComputedStyle* aComputedStyle) {
+   MOZ_ASSERT(aComputedStyle);
+   mComputedStyle = aComputedStyle;
+diff --git a/layout/mathml/nsMathMLChar.h b/layout/mathml/nsMathMLChar.h
+index 58985d1dec3c..f46599698fdc 100644
+--- a/layout/mathml/nsMathMLChar.h
++++ b/layout/mathml/nsMathMLChar.h
+@@ -138,6 +138,12 @@ class nsMathMLChar {
+     mBoundingMetrics = aBoundingMetrics;
+   }
+ 
++  // Hooks to access the extra leaf ComputedStyles given to the MathMLChars.
++  // They provide an interface to make them accessible to the Style System via
++  // the Get/Set AdditionalComputedStyle() APIs. Owners of MathMLChars
++  // should honor these APIs.
++  mozilla::ComputedStyle* GetComputedStyle() const;
++
+   void SetComputedStyle(mozilla::ComputedStyle* aComputedStyle);
+ 
+   nscoord ItalicCorrection() const { return mItalicCorrection; }
+diff --git a/layout/mathml/nsMathMLmencloseFrame.cpp b/layout/mathml/nsMathMLmencloseFrame.cpp
+index 8cd7c9d8dcc6..374463c282fe 100644
+--- a/layout/mathml/nsMathMLmencloseFrame.cpp
++++ b/layout/mathml/nsMathMLmencloseFrame.cpp
+@@ -65,6 +65,8 @@ nsresult nsMathMLmencloseFrame::AllocateMathMLChar(MencloseNotation mask) {
+   }
+ 
+   // No need to track the ComputedStyle given to our MathML chars.
++  // The Style System will use Get/SetAdditionalComputedStyle() to keep it
++  // up-to-date if dynamic changes arise.
+   uint32_t i = mMathMLChar.Length();
+   nsAutoString Char;
+ 
+diff --git a/layout/style/RestyleManager.cpp b/layout/style/RestyleManager.cpp
+index 3c74b95b176c..eb2e92d669cc 100644
+--- a/layout/style/RestyleManager.cpp
++++ b/layout/style/RestyleManager.cpp
+@@ -2609,6 +2609,52 @@ static void UpdateFirstLetterIfNeeded(nsIFrame* aFrame,
+       ->UpdateFirstLetterStyle(aRestyleState);
+ }
+ 
++static void UpdateOneAdditionalComputedStyle(nsIFrame* aFrame, uint32_t aIndex,
++                                             ComputedStyle& aOldContext,
++                                             ServoRestyleState& aRestyleState) {
++  auto pseudoType = aOldContext.GetPseudoType();
++  MOZ_ASSERT(pseudoType != PseudoStyleType::NotPseudo);
++  MOZ_ASSERT(!PseudoStyle::SupportsUserActionState(pseudoType));
++
++  RefPtr<ComputedStyle> newStyle =
++      aRestyleState.StyleSet().ResolvePseudoElementStyle(
++          *aFrame->GetContent()->AsElement(), pseudoType, nullptr,
++          aFrame->Style());
++
++  uint32_t equalStructs;  // Not used, actually.
++  nsChangeHint childHint =
++      aOldContext.CalcStyleDifference(*newStyle, &equalStructs);
++  if (CanUseHandledHintsFromAncestors(aFrame)) {
++    childHint = NS_RemoveSubsumedHints(childHint,
++                                       aRestyleState.ChangesHandledFor(aFrame));
++  }
++
++  if (childHint) {
++    if (childHint & nsChangeHint_ReconstructFrame) {
++      // If we generate a reconstruct here, remove any non-reconstruct hints we
++      // may have already generated for this content.
++      aRestyleState.ChangeList().PopChangesForContent(aFrame->GetContent());
++    }
++    aRestyleState.ChangeList().AppendChange(aFrame, aFrame->GetContent(),
++                                            childHint);
++  }
++
++  aFrame->SetAdditionalComputedStyle(aIndex, newStyle);
++}
++
++static void UpdateAdditionalComputedStyles(nsIFrame* aFrame,
++                                           ServoRestyleState& aRestyleState) {
++  MOZ_ASSERT(aFrame);
++  MOZ_ASSERT(aFrame->GetContent() && aFrame->GetContent()->IsElement());
++
++  // FIXME(emilio): Consider adding a bit or something to avoid the initial
++  // virtual call?
++  uint32_t index = 0;
++  while (auto* oldStyle = aFrame->GetAdditionalComputedStyle(index)) {
++    UpdateOneAdditionalComputedStyle(aFrame, index++, *oldStyle, aRestyleState);
++  }
++}
++
+ static void UpdateFramePseudoElementStyles(nsIFrame* aFrame,
+                                            ServoRestyleState& aRestyleState) {
+   if (nsBlockFrame* blockFrame = do_QueryFrame(aFrame)) {
+@@ -2918,9 +2964,14 @@ bool RestyleManager::ProcessPostTraversal(Element* aElement,
+     // This does mean that we may be setting the wrong ComputedStyle on our
+     // initial continuations; ::first-line fixes that up after the fact.
+     for (nsIFrame* f = styleFrame; f; f = f->GetNextContinuation()) {
++      MOZ_ASSERT_IF(f != styleFrame, !f->GetAdditionalComputedStyle(0));
+       f->SetComputedStyle(upToDateStyle);
+     }
+ 
++    if (styleFrame) {
++      UpdateAdditionalComputedStyles(styleFrame, aRestyleState);
++    }
++
+     if (!aElement->GetParent()) {
+       // This is the root.  Update styles on the viewport as needed.
+       ViewportFrame* viewport =
+@@ -3808,6 +3859,23 @@ void RestyleManager::DoReparentComputedStyleForFirstLine(
+       oldStyle, newParent, layoutParent, ourElement);
+   aFrame->SetComputedStyle(newStyle);
+ 
++  // This logic somewhat mirrors the logic in
++  // RestyleManager::ProcessPostTraversal.
++  if (isElement) {
++    // We can't use UpdateAdditionalComputedStyles as-is because it needs a
++    // ServoRestyleState and maintaining one of those during a _frametree_
++    // traversal is basically impossible.
++    int32_t index = 0;
++    while (auto* oldAdditionalStyle =
++               aFrame->GetAdditionalComputedStyle(index)) {
++      RefPtr<ComputedStyle> newAdditionalContext =
++          aStyleSet.ReparentComputedStyle(oldAdditionalStyle, newStyle,
++                                          newStyle, nullptr);
++      aFrame->SetAdditionalComputedStyle(index, newAdditionalContext);
++      ++index;
++    }
++  }
++
+   // Generally, owned anon boxes are our descendants.  The only exceptions are
+   // tables (for the table wrapper) and inline frames (for the block part of the
+   // block-in-inline split).  We're going to update our descendants when looping
+diff --git a/layout/style/nsFontFaceUtils.cpp b/layout/style/nsFontFaceUtils.cpp
+index 006293f2a268..35288b511459 100644
+--- a/layout/style/nsFontFaceUtils.cpp
++++ b/layout/style/nsFontFaceUtils.cpp
+@@ -48,7 +48,8 @@ static bool IsFontReferenced(const ComputedStyle& aStyle,
+ static FontUsageKind StyleFontUsage(nsIFrame* aFrame, ComputedStyle* aStyle,
+                                     nsPresContext* aPresContext,
+                                     const gfxUserFontEntry* aFont,
+-                                    const nsAString& aFamilyName) {
++                                    const nsAString& aFamilyName,
++                                    bool aIsExtraStyle) {
+   MOZ_ASSERT(NS_ConvertUTF8toUTF16(aFont->FamilyName()) == aFamilyName);
+ 
+   auto FontIsUsed = [&aFont, &aPresContext,
+@@ -78,9 +79,15 @@ static FontUsageKind StyleFontUsage(nsIFrame* aFrame, ComputedStyle* aStyle,
+ 
+   if (aStyle->DependsOnInheritedFontMetrics() &&
+       !(usage & FontUsageKind::FontMetrics)) {
+-    nsIFrame* provider = nullptr;
+-    if (auto* parentStyle = aFrame->GetParentComputedStyle(&provider);
+-        parentStyle && FontIsUsed(parentStyle)) {
++    ComputedStyle* parentStyle = nullptr;
++    if (aIsExtraStyle) {
++      parentStyle = aFrame->Style();
++    } else {
++      nsIFrame* provider = nullptr;
++      parentStyle = aFrame->GetParentComputedStyle(&provider);
++    }
++
++    if (parentStyle && FontIsUsed(parentStyle)) {
+       usage |= FontUsageKind::FontMetrics;
+     }
+   }
+@@ -93,8 +100,25 @@ static FontUsageKind FrameFontUsage(nsIFrame* aFrame,
+                                     const gfxUserFontEntry* aFont,
+                                     const nsAString& aFamilyName) {
+   // check the style of the frame
+-  return StyleFontUsage(aFrame, aFrame->Style(), aPresContext, aFont,
+-                        aFamilyName);
++  FontUsageKind kind = StyleFontUsage(aFrame, aFrame->Style(), aPresContext,
++                                      aFont, aFamilyName, /* extra = */ false);
++  if (kind == FontUsageKind::Max) {
++    return kind;
++  }
++
++  // check additional styles
++  int32_t contextIndex = 0;
++  for (ComputedStyle* extraContext;
++       (extraContext = aFrame->GetAdditionalComputedStyle(contextIndex));
++       ++contextIndex) {
++    kind |= StyleFontUsage(aFrame, extraContext, aPresContext, aFont,
++                           aFamilyName, /* extra = */ true);
++    if (kind == FontUsageKind::Max) {
++      break;
++    }
++  }
++
++  return kind;
+ }
+ 
+ // TODO(emilio): Can we use the restyle-hint machinery instead of this?

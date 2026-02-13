@@ -1,0 +1,427 @@
+diff --git a/dom/html/HTMLSelectElement.cpp b/dom/html/HTMLSelectElement.cpp
+index e78090b7f08f..b8399338bf37 100644
+--- a/dom/html/HTMLSelectElement.cpp
++++ b/dom/html/HTMLSelectElement.cpp
+@@ -27,6 +27,7 @@
+ #include "nsError.h"
+ #include "nsGkAtoms.h"
+ #include "nsIFrame.h"
++#include "nsISelectControlFrame.h"
+ #include "nsLayoutUtils.h"
+ #include "nsListControlFrame.h"
+ #include "nsTextNode.h"
+@@ -348,21 +349,21 @@ void HTMLSelectElement::InsertOptionsIntoList(nsIContent* aOptions,
+     // Get the frame stuff for notification. No need to flush here
+     // since if there's no frame for the select yet the select will
+     // get into the right state once it's created.
+-    nsListControlFrame* listBoxFrame = nullptr;
++    nsISelectControlFrame* selectFrame = nullptr;
+     AutoWeakFrame weakSelectFrame;
+     bool didGetFrame = false;
+ 
+     // Actually select the options if the added options warrant it
+     for (int32_t i = aListIndex; i < insertIndex; i++) {
+       // Notify the frame that the option is added
+-      if (!didGetFrame || (listBoxFrame && !weakSelectFrame.IsAlive())) {
+-        listBoxFrame = GetListBoxFrame();
+-        weakSelectFrame = do_QueryFrame(listBoxFrame);
++      if (!didGetFrame || (selectFrame && !weakSelectFrame.IsAlive())) {
++        selectFrame = GetSelectFrame();
++        weakSelectFrame = do_QueryFrame(selectFrame);
+         didGetFrame = true;
+       }
+ 
+-      if (listBoxFrame) {
+-        listBoxFrame->AddOption(i);
++      if (selectFrame) {
++        selectFrame->AddOption(i);
+       }
+ 
+       RefPtr<HTMLOptionElement> option = Item(i);
+@@ -378,7 +379,7 @@ void HTMLSelectElement::InsertOptionsIntoList(nsIContent* aOptions,
+         // This is sort of a hack ... we need to notify that the option was
+         // set and change selectedIndex even though we didn't really change
+         // its value.
+-        OnOptionSelected(listBoxFrame, i, true, false, aNotify);
++        OnOptionSelected(selectFrame, i, true, false, aNotify);
+       }
+     }
+ 
+@@ -426,10 +427,10 @@ nsresult HTMLSelectElement::RemoveOptionsFromList(nsIContent* aOptions,
+ 
+   if (numRemoved) {
+     // Tell the widget we removed the options
+-    if (nsListControlFrame* listBoxFrame = GetListBoxFrame()) {
++    if (nsISelectControlFrame* selectFrame = GetSelectFrame()) {
+       nsAutoScriptBlocker scriptBlocker;
+       for (int32_t i = aListIndex; i < aListIndex + numRemoved; ++i) {
+-        listBoxFrame->RemoveOption(i);
++        selectFrame->RemoveOption(i);
+       }
+     }
+ 
+@@ -606,7 +607,7 @@ int32_t HTMLSelectElement::GetFirstChildOptionIndex(nsIContent* aOptions,
+   return retval;
+ }
+ 
+-nsListControlFrame* HTMLSelectElement::GetListBoxFrame() {
++nsISelectControlFrame* HTMLSelectElement::GetSelectFrame() {
+   return do_QueryFrame(GetPrimaryFrame());
+ }
+ 
+@@ -747,8 +748,8 @@ void HTMLSelectElement::SetSelectedIndexInternal(int32_t aIndex, bool aNotify) {
+ 
+   SetOptionsSelectedByIndex(aIndex, aIndex, mask);
+ 
+-  if (nsListControlFrame* listBoxFrame = GetListBoxFrame()) {
+-    listBoxFrame->OnSetSelectedIndex(oldSelectedIndex, mSelectedIndex);
++  if (nsISelectControlFrame* selectFrame = GetSelectFrame()) {
++    selectFrame->OnSetSelectedIndex(oldSelectedIndex, mSelectedIndex);
+   }
+   OnSelectionChanged();
+ }
+@@ -758,7 +759,7 @@ bool HTMLSelectElement::IsOptionSelectedByIndex(int32_t aIndex) const {
+   return option && option->Selected();
+ }
+ 
+-void HTMLSelectElement::OnOptionSelected(nsListControlFrame* aSelectFrame,
++void HTMLSelectElement::OnOptionSelected(nsISelectControlFrame* aSelectFrame,
+                                          int32_t aIndex, bool aSelected,
+                                          bool aChangeOptionState,
+                                          bool aNotify) {
+@@ -857,7 +858,7 @@ bool HTMLSelectElement::SetOptionsSelectedByIndex(int32_t aStartIndex,
+   bool optionsSelected = false;
+   bool optionsDeselected = false;
+ 
+-  nsListControlFrame* listBoxFrame = nullptr;
++  nsISelectControlFrame* selectFrame = nullptr;
+   bool didGetFrame = false;
+   AutoWeakFrame weakSelectFrame;
+ 
+@@ -914,11 +915,11 @@ bool HTMLSelectElement::SetOptionsSelectedByIndex(int32_t aStartIndex,
+           // to flush here, if there's no frame yet we don't need to
+           // force it to be created just to notify it about a change
+           // in the select.
+-          listBoxFrame = GetListBoxFrame();
+-          weakSelectFrame = do_QueryFrame(listBoxFrame);
++          selectFrame = GetSelectFrame();
++          weakSelectFrame = do_QueryFrame(selectFrame);
+           didGetFrame = true;
+ 
+-          OnOptionSelected(listBoxFrame, optIndex, true, !option->Selected(),
++          OnOptionSelected(selectFrame, optIndex, true, !option->Selected(),
+                            aOptionsMask.contains(OptionFlag::Notify));
+           optionsSelected = true;
+         }
+@@ -938,17 +939,17 @@ bool HTMLSelectElement::SetOptionsSelectedByIndex(int32_t aStartIndex,
+           HTMLOptionElement* option = Item(optIndex);
+           // If the index is already deselected, ignore it.
+           if (option && option->Selected()) {
+-            if (!didGetFrame || (listBoxFrame && !weakSelectFrame.IsAlive())) {
++            if (!didGetFrame || (selectFrame && !weakSelectFrame.IsAlive())) {
+               // To notify the frame if anything gets changed, don't
+               // flush, if the frame doesn't exist we don't need to
+               // create it just to tell it about this change.
+-              listBoxFrame = GetListBoxFrame();
+-              weakSelectFrame = do_QueryFrame(listBoxFrame);
++              selectFrame = GetSelectFrame();
++              weakSelectFrame = do_QueryFrame(selectFrame);
+ 
+               didGetFrame = true;
+             }
+ 
+-            OnOptionSelected(listBoxFrame, optIndex, false, true,
++            OnOptionSelected(selectFrame, optIndex, false, true,
+                              aOptionsMask.contains(OptionFlag::Notify));
+             optionsDeselected = true;
+ 
+@@ -972,17 +973,17 @@ bool HTMLSelectElement::SetOptionsSelectedByIndex(int32_t aStartIndex,
+ 
+       // If the index is already selected, ignore it.
+       if (option && option->Selected()) {
+-        if (!didGetFrame || (listBoxFrame && !weakSelectFrame.IsAlive())) {
++        if (!didGetFrame || (selectFrame && !weakSelectFrame.IsAlive())) {
+           // To notify the frame if anything gets changed, don't
+           // flush, if the frame doesn't exist we don't need to
+           // create it just to tell it about this change.
+-          listBoxFrame = GetListBoxFrame();
+-          weakSelectFrame = do_QueryFrame(listBoxFrame);
++          selectFrame = GetSelectFrame();
++          weakSelectFrame = do_QueryFrame(selectFrame);
+ 
+           didGetFrame = true;
+         }
+ 
+-        OnOptionSelected(listBoxFrame, optIndex, false, true,
++        OnOptionSelected(selectFrame, optIndex, false, true,
+                          aOptionsMask.contains(OptionFlag::Notify));
+         optionsDeselected = true;
+       }
+@@ -1233,8 +1234,8 @@ void HTMLSelectElement::DoneAddingChildren(bool aHaveNotified) {
+   }
+ 
+   // Notify the frame
+-  if (auto* listBoxFrame = GetListBoxFrame()) {
+-    listBoxFrame->DoneAddingChildren();
++  if (nsISelectControlFrame* selectFrame = GetSelectFrame()) {
++    selectFrame->DoneAddingChildren();
+   }
+ 
+   if (!mInhibitStateRestoration) {
+@@ -1519,7 +1520,7 @@ HTMLSelectElement::SubmitNamesValues(FormData* aFormData) {
+ }
+ 
+ void HTMLSelectElement::DispatchContentReset() {
+-  if (nsListControlFrame* listFrame = GetListBoxFrame()) {
++  if (nsListControlFrame* listFrame = do_QueryFrame(GetPrimaryFrame())) {
+     listFrame->OnContentReset();
+   }
+ }
+diff --git a/dom/html/HTMLSelectElement.h b/dom/html/HTMLSelectElement.h
+index e8d1bafe06da..70f5a1b86dc6 100644
+--- a/dom/html/HTMLSelectElement.h
++++ b/dom/html/HTMLSelectElement.h
+@@ -22,7 +22,7 @@
+ class nsContentList;
+ class nsIDOMHTMLOptionElement;
+ class nsIHTMLCollection;
+-class nsListControlFrame;
++class nsISelectControlFrame;
+ 
+ namespace mozilla {
+ 
+@@ -396,7 +396,7 @@ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
+    *                           its selected state to aSelected.
+    * @param aNotify whether to notify the style system and such
+    */
+-  void OnOptionSelected(nsListControlFrame* aSelectFrame, int32_t aIndex,
++  void OnOptionSelected(nsISelectControlFrame* aSelectFrame, int32_t aIndex,
+                         bool aSelected, bool aChangeOptionState, bool aNotify);
+   /**
+    * Restore state to a particular state string (representing the options)
+@@ -458,8 +458,11 @@ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
+   int32_t GetFirstChildOptionIndex(nsIContent* aOptions, int32_t aStartIndex,
+                                    int32_t aEndIndex);
+ 
+-  /** Get the frame as an nsListControlFrame (MAY RETURN nullptr) */
+-  nsListControlFrame* GetListBoxFrame();
++  /**
++   * Get the frame as an nsISelectControlFrame (MAY RETURN nullptr)
++   * @return the select frame, or null
++   */
++  nsISelectControlFrame* GetSelectFrame();
+ 
+   /**
+    * Helper method for dispatching ContentReset notifications to list box
+diff --git a/layout/forms/moz.build b/layout/forms/moz.build
+index 73bc8d3f34ab..3ff5cdb4bbb4 100644
+--- a/layout/forms/moz.build
++++ b/layout/forms/moz.build
+@@ -10,6 +10,10 @@ with Files("**"):
+ MOCHITEST_MANIFESTS += ["test/mochitest.toml"]
+ MOCHITEST_CHROME_MANIFESTS += ["test/chrome.toml"]
+ 
++EXPORTS += [
++    "nsISelectControlFrame.h",
++]
++
+ UNIFIED_SOURCES += [
+     "ButtonControlFrame.cpp",
+     "HTMLSelectEventListener.cpp",
+diff --git a/layout/forms/nsISelectControlFrame.h b/layout/forms/nsISelectControlFrame.h
+new file mode 100644
+index 000000000000..92dcd0a37494
+--- /dev/null
++++ b/layout/forms/nsISelectControlFrame.h
+@@ -0,0 +1,42 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef nsISelectControlFrame_h_
++#define nsISelectControlFrame_h_
++
++#include "nsQueryFrame.h"
++
++/**
++ * nsISelectControlFrame is the interface for combo boxes and listboxes
++ */
++class nsISelectControlFrame : public nsQueryFrame {
++ public:
++  NS_DECL_QUERYFRAME_TARGET(nsISelectControlFrame)
++
++  /** Adds an option to the list at index */
++  NS_IMETHOD AddOption(int32_t index) = 0;
++
++  /**
++   * Removes the option at index.  The caller must have a live script
++   * blocker while calling this method.
++   */
++  NS_IMETHOD RemoveOption(int32_t index) = 0;
++
++  /** Called when the parser is done adding children */
++  NS_IMETHOD DoneAddingChildren() = 0;
++
++  /** Notify the frame when an option is selected */
++  NS_IMETHOD OnOptionSelected(int32_t aIndex, bool aSelected) = 0;
++
++  /**
++   * Notify the frame when selectedIndex was changed.  This might
++   * destroy the frame.
++   */
++  NS_IMETHOD_(void)
++  OnSetSelectedIndex(int32_t aOldIndex, int32_t aNewIndex) = 0;
++};
++
++#endif
+diff --git a/layout/forms/nsListControlFrame.cpp b/layout/forms/nsListControlFrame.cpp
+index c9d6ee352d12..c06a9378bd2b 100644
+--- a/layout/forms/nsListControlFrame.cpp
++++ b/layout/forms/nsListControlFrame.cpp
+@@ -87,6 +87,7 @@ bool nsListControlFrame::IsFocused() const {
+ void nsListControlFrame::InvalidateFocus() { InvalidateFrame(); }
+ 
+ NS_QUERYFRAME_HEAD(nsListControlFrame)
++  NS_QUERYFRAME_ENTRY(nsISelectControlFrame)
+   NS_QUERYFRAME_ENTRY(nsListControlFrame)
+ NS_QUERYFRAME_TAIL_INHERITING(ScrollContainerFrame)
+ 
+@@ -578,10 +579,12 @@ dom::HTMLOptionElement* nsListControlFrame::GetOption(uint32_t aIndex) const {
+   return Select().Item(aIndex);
+ }
+ 
+-void nsListControlFrame::OnOptionSelected(int32_t aIndex, bool aSelected) {
++NS_IMETHODIMP
++nsListControlFrame::OnOptionSelected(int32_t aIndex, bool aSelected) {
+   if (aSelected) {
+     ScrollToIndex(aIndex);
+   }
++  return NS_OK;
+ }
+ 
+ void nsListControlFrame::OnContentReset() { ResetList(true); }
+@@ -643,15 +646,27 @@ uint32_t nsListControlFrame::GetNumberOfOptions() {
+   return options->Length();
+ }
+ 
+-void nsListControlFrame::DoneAddingChildren() { ResetList(true); }
++//----------------------------------------------------------------------
++// nsISelectControlFrame
++//----------------------------------------------------------------------
++
++NS_IMETHODIMP
++nsListControlFrame::DoneAddingChildren() {
++  ResetList(true);
++  return NS_OK;
++}
+ 
+-void nsListControlFrame::AddOption(int32_t aIndex) {
++NS_IMETHODIMP
++nsListControlFrame::AddOption(int32_t aIndex) {
+   // Make sure we scroll to the selected option as needed
+   mNeedToReset = true;
+ 
+-  if (Select().IsDoneAddingChildren()) {
+-    mPostChildrenLoadedReset = true;
++  if (!Select().IsDoneAddingChildren()) {
++    return NS_OK;
+   }
++
++  mPostChildrenLoadedReset = true;
++  return NS_OK;
+ }
+ 
+ static int32_t DecrementAndClamp(int32_t aSelectionIndex, int32_t aLength) {
+@@ -659,7 +674,8 @@ static int32_t DecrementAndClamp(int32_t aSelectionIndex, int32_t aLength) {
+                       : std::max(0, aSelectionIndex - 1);
+ }
+ 
+-void nsListControlFrame::RemoveOption(int32_t aIndex) {
++NS_IMETHODIMP
++nsListControlFrame::RemoveOption(int32_t aIndex) {
+   MOZ_ASSERT(aIndex >= 0, "negative <option> index");
+ 
+   // Need to reset if we're a dropdown
+@@ -687,6 +703,7 @@ void nsListControlFrame::RemoveOption(int32_t aIndex) {
+   }
+ 
+   InvalidateFocus();
++  return NS_OK;
+ }
+ 
+ //---------------------------------------------------------
+@@ -762,6 +779,10 @@ nsListControlFrame::OnSetSelectedIndex(int32_t aOldIndex, int32_t aNewIndex) {
+ #endif
+ }
+ 
++//----------------------------------------------------------------------
++// End nsISelectControlFrame
++//----------------------------------------------------------------------
++
+ class AsyncReset final : public Runnable {
+  public:
+   AsyncReset(nsListControlFrame* aFrame, bool aScroll)
+diff --git a/layout/forms/nsListControlFrame.h b/layout/forms/nsListControlFrame.h
+index 935b1cb26af8..6ca4578e4c29 100644
+--- a/layout/forms/nsListControlFrame.h
++++ b/layout/forms/nsListControlFrame.h
+@@ -9,6 +9,7 @@
+ #include "mozilla/Attributes.h"
+ #include "mozilla/ScrollContainerFrame.h"
+ #include "mozilla/StaticPtr.h"
++#include "nsISelectControlFrame.h"
+ 
+ class nsComboboxControlFrame;
+ class nsPresContext;
+@@ -29,7 +30,8 @@ class HTMLOptionsCollection;
+  * Frame-based listbox.
+  */
+ 
+-class nsListControlFrame final : public mozilla::ScrollContainerFrame {
++class nsListControlFrame final : public mozilla::ScrollContainerFrame,
++                                 public nsISelectControlFrame {
+  public:
+   using HTMLOptionElement = mozilla::dom::HTMLOptionElement;
+ 
+@@ -90,19 +92,22 @@ class nsListControlFrame final : public mozilla::ScrollContainerFrame {
+   uint32_t GetNumberOfOptions();
+ 
+   MOZ_CAN_RUN_SCRIPT_BOUNDARY void OnContentReset();
+-  void AddOption(int32_t aIndex);
+-  void RemoveOption(int32_t aIndex);
++
++  // nsISelectControlFrame
++  NS_IMETHOD AddOption(int32_t index) final;
++  NS_IMETHOD RemoveOption(int32_t index) final;
+   MOZ_CAN_RUN_SCRIPT_BOUNDARY
+-  void DoneAddingChildren();
++  NS_IMETHOD DoneAddingChildren() final;
+ 
+   /**
+    * Gets the content (an option) by index and then set it as
+    * being selected or not selected.
+    */
+   MOZ_CAN_RUN_SCRIPT_BOUNDARY
+-  void OnOptionSelected(int32_t aIndex, bool aSelected);
++  NS_IMETHOD OnOptionSelected(int32_t aIndex, bool aSelected) final;
+   MOZ_CAN_RUN_SCRIPT_BOUNDARY
+-  void OnSetSelectedIndex(int32_t aOldIndex, int32_t aNewIndex);
++  NS_IMETHOD_(void)
++  OnSetSelectedIndex(int32_t aOldIndex, int32_t aNewIndex) final;
+ 
+   /**
+    * Mouse event listeners.
+diff --git a/layout/generic/FrameClasses.py b/layout/generic/FrameClasses.py
+index 6a25e2ca4066..a24f360a85d0 100644
+--- a/layout/generic/FrameClasses.py
++++ b/layout/generic/FrameClasses.py
+@@ -190,6 +190,7 @@ FRAME_CLASSES = [
+     AbstractFrame("nsIPercentBSizeObserver"),
+     AbstractFrame("nsIPopupContainer"),
+     AbstractFrame("nsIScrollbarMediator"),
++    AbstractFrame("nsISelectControlFrame"),
+     AbstractFrame("nsIStatefulFrame"),
+     AbstractFrame("ISVGDisplayableFrame"),
+     AbstractFrame("ISVGSVGFrame"),

@@ -1,0 +1,1 @@
+Bug 2011709 - Make combobox select use a shadow tree for its contents. r=jjaschke,layout-reviewers,firefox-style-system-reviewers,accessibility-platform-reviewers,smaug,Jamie,jfkthame,dshin    2026-02-03 21:32:23    402146477384d17abf1101321629dff3ff5a761a

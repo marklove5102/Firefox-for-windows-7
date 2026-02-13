@@ -1,0 +1,1868 @@
+diff --git a/accessible/base/nsAccessibilityService.cpp b/accessible/base/nsAccessibilityService.cpp
+index f72f6d0a72b0..b4963063322c 100644
+--- a/accessible/base/nsAccessibilityService.cpp
++++ b/accessible/base/nsAccessibilityService.cpp
+@@ -884,19 +884,6 @@ void nsAccessibilityService::TableLayoutGuessMaybeChanged(
+   }
+ }
+ 
+-void nsAccessibilityService::ComboboxValueChanged(nsIContent* aSelect) {
+-  DocAccessible* document =
+-      GetDocAccessible(aSelect->OwnerDoc()->GetPresShell());
+-  if (!document) {
+-    return;
+-  }
+-  if (LocalAccessible* accessible = document->GetAccessible(aSelect)) {
+-    MOZ_ASSERT(accessible->IsCombobox());
+-    document->FireDelayedEvent(nsIAccessibleEvent::EVENT_TEXT_VALUE_CHANGE,
+-                               accessible);
+-  }
+-}
+-
+ void nsAccessibilityService::ComboboxOptionMaybeChanged(
+     PresShell* aPresShell, nsIContent* aMutatingNode) {
+   DocAccessible* document = GetDocAccessible(aPresShell);
+diff --git a/accessible/base/nsAccessibilityService.h b/accessible/base/nsAccessibilityService.h
+index 4f9de6a23b59..c4867f7e8cf7 100644
+--- a/accessible/base/nsAccessibilityService.h
++++ b/accessible/base/nsAccessibilityService.h
+@@ -203,12 +203,10 @@ class nsAccessibilityService final : public mozilla::a11y::DocManager,
+                                     nsIContent* aContent);
+ 
+   /**
+-   * Notifies when a combobox's <option> text or label changes.
++   * Notifies when a combobox <option> text or label changes.
+    */
+   void ComboboxOptionMaybeChanged(mozilla::PresShell*,
+                                   nsIContent* aMutatingNode);
+-  // Notifies when a combobox's selected index changes.
+-  void ComboboxValueChanged(nsIContent*);
+ 
+   void UpdateText(mozilla::PresShell* aPresShell, nsIContent* aContent);
+ 
+diff --git a/accessible/base/nsCoreUtils.cpp b/accessible/base/nsCoreUtils.cpp
+index bc71f99732f7..461ec583ff00 100644
+--- a/accessible/base/nsCoreUtils.cpp
++++ b/accessible/base/nsCoreUtils.cpp
+@@ -24,6 +24,7 @@
+ #include "mozilla/MouseEvents.h"
+ #include "mozilla/PresShell.h"
+ #include "mozilla/ScrollContainerFrame.h"
++#include "mozilla/StaticPrefs_dom.h"
+ #include "mozilla/TouchEvents.h"
+ #include "nsGkAtoms.h"
+ 
+@@ -35,10 +36,6 @@
+ #include "nsTreeColumns.h"
+ #include "mozilla/dom/DocumentInlines.h"
+ #include "mozilla/dom/Element.h"
+-#include "mozilla/dom/HTMLOptGroupElement.h"
+-#include "mozilla/dom/HTMLOptionElement.h"
+-#include "mozilla/dom/HTMLSelectElement.h"
+-#include "mozilla/dom/AncestorIterator.h"
+ #include "mozilla/dom/ElementInternals.h"
+ #include "mozilla/dom/HTMLLabelElement.h"
+ #include "mozilla/dom/MouseEventBinding.h"
+@@ -587,23 +584,15 @@ bool nsCoreUtils::CanCreateAccessibleWithoutFrame(nsIContent* aContent) {
+   if (!element) {
+     return false;
+   }
+-  // <option> and <optgroup> can create an accessible for comboboxes, if our
+-  // select can also create an accessible (even if they're display: none)
+-  if (auto* option = dom::HTMLOptionElement::FromNode(element)) {
+-    if (auto* select = option->GetSelect(); select && select->IsCombobox()) {
+-      element = select;
+-    }
+-  } else if (auto* optgroup = dom::HTMLOptGroupElement::FromNode(element)) {
+-    if (auto* select = optgroup->GetSelect(); select && select->IsCombobox()) {
+-      element = select;
+-    }
++  if (!element->HasServoData() || Servo_Element_IsDisplayNone(element)) {
++    // Out of the flat tree or in a display: none subtree.
++    return false;
+   }
+ 
+   // If we aren't display: contents or option/optgroup we can't create an
+   // accessible without frame. Our select combobox code relies on the latter.
+-  // Note that we need to check primary frame explicitly for the <select> case
+-  // above.
+-  if (!element->GetPrimaryFrame() && !element->IsDisplayContents()) {
++  if (!element->IsDisplayContents() &&
++      !element->IsAnyOfHTMLElements(nsGkAtoms::option, nsGkAtoms::optgroup)) {
+     return false;
+   }
+ 
+@@ -611,9 +600,10 @@ bool nsCoreUtils::CanCreateAccessibleWithoutFrame(nsIContent* aContent) {
+   // create an accessible if we're in a content-visibility: hidden subtree.
+   //
+   // To check that, find the closest ancestor element with a frame.
+-  for (nsIContent* c :
+-       element->InclusiveFlatTreeAncestorsOfType<nsIContent>()) {
+-    if (nsIFrame* f = c->GetPrimaryFrame()) {
++  for (nsINode* ancestor = element->GetFlattenedTreeParentNode();
++       ancestor && ancestor->IsContent();
++       ancestor = ancestor->GetFlattenedTreeParentNode()) {
++    if (nsIFrame* f = ancestor->AsContent()->GetPrimaryFrame()) {
+       if (f->HidesContent(nsIFrame::IncludeContentVisibility::Hidden) ||
+           f->IsHiddenByContentVisibilityOnAnyAncestor(
+               nsIFrame::IncludeContentVisibility::Hidden)) {
+diff --git a/accessible/generic/RootAccessible.cpp b/accessible/generic/RootAccessible.cpp
+index 0853f6c6aab4..eeb5dc7e167d 100644
+--- a/accessible/generic/RootAccessible.cpp
++++ b/accessible/generic/RootAccessible.cpp
+@@ -127,7 +127,7 @@ const char* const kEventTypes[] = {
+ #endif
+     // Fired when list or tree selection changes.
+     "select",
+-    // Fired when value changes immediately, whether or not focused changed.
++    // Fired when value changes immediately, wether or not focused changed.
+     "ValueChange", "AlertActive", "TreeRowCountChanged", "TreeInvalidated",
+     // add ourself as a OpenStateChange listener (custom event fired in
+     // tree.xml)
+diff --git a/dom/html/HTMLOptGroupElement.cpp b/dom/html/HTMLOptGroupElement.cpp
+index e5caf4e78b83..3d9c134033d0 100644
+--- a/dom/html/HTMLOptGroupElement.cpp
++++ b/dom/html/HTMLOptGroupElement.cpp
+@@ -37,8 +37,12 @@ void HTMLOptGroupElement::GetEventTargetParent(EventChainPreVisitor& aVisitor) {
+   nsGenericHTMLElement::GetEventTargetParent(aVisitor);
+ }
+ 
+-HTMLSelectElement* HTMLOptGroupElement::GetSelect() const {
+-  return HTMLSelectElement::FromNodeOrNull(GetParentNode());
++Element* HTMLOptGroupElement::GetSelect() {
++  Element* parent = nsINode::GetParentElement();
++  if (!parent || !parent->IsHTMLElement(nsGkAtoms::select)) {
++    return nullptr;
++  }
++  return parent;
+ }
+ 
+ void HTMLOptGroupElement::InsertChildBefore(
+diff --git a/dom/html/HTMLOptGroupElement.h b/dom/html/HTMLOptGroupElement.h
+index 80edef950b0f..344f461b39d1 100644
+--- a/dom/html/HTMLOptGroupElement.h
++++ b/dom/html/HTMLOptGroupElement.h
+@@ -58,12 +58,17 @@ class HTMLOptGroupElement final : public nsGenericHTMLElement {
+     SetHTMLAttr(nsGkAtoms::label, aLabel, aError);
+   }
+ 
+-  // Get the select content element that contains this optgroup
+-  HTMLSelectElement* GetSelect() const;
+-
+  protected:
+   virtual ~HTMLOptGroupElement();
++
+   JSObject* WrapNode(JSContext*, JS::Handle<JSObject*> aGivenProto) override;
++
++ protected:
++  /**
++   * Get the select content element that contains this option
++   * @param aSelectElement the select element [OUT]
++   */
++  Element* GetSelect();
+ };
+ 
+ }  // namespace dom
+diff --git a/dom/html/HTMLOptionElement.cpp b/dom/html/HTMLOptionElement.cpp
+index 8faa1cf6d03c..357a5012a6a7 100644
+--- a/dom/html/HTMLOptionElement.cpp
++++ b/dom/html/HTMLOptionElement.cpp
+@@ -11,9 +11,11 @@
+ #include "mozilla/dom/HTMLSelectElement.h"
+ #include "nsGkAtoms.h"
+ #include "nsIFormControl.h"
++#include "nsISelectControlFrame.h"
+ #include "nsStyleConsts.h"
+ 
+ // Notify/query select frame for selected state
++#include "mozAutoDocUpdate.h"
+ #include "mozilla/dom/Document.h"
+ #include "nsCOMPtr.h"
+ #include "nsContentCreatorFunctions.h"
+@@ -86,7 +88,8 @@ void HTMLOptionElement::UpdateDisabledState(bool aNotify) {
+ void HTMLOptionElement::SetSelected(bool aValue) {
+   // Note: The select content obj maintains all the PresState
+   // so defer to it to get the answer
+-  if (HTMLSelectElement* select = GetSelect()) {
++  HTMLSelectElement* selectInt = GetSelect();
++  if (selectInt) {
+     int32_t index = Index();
+     HTMLSelectElement::OptionFlags mask{
+         HTMLSelectElement::OptionFlag::SetDisabled,
+@@ -96,7 +99,7 @@ void HTMLOptionElement::SetSelected(bool aValue) {
+     }
+ 
+     // This should end up calling SetSelectedInternal
+-    select->SetOptionsSelectedByIndex(index, index, mask);
++    selectInt->SetOptionsSelectedByIndex(index, index, mask);
+   } else {
+     SetSelectedInternal(aValue, true);
+   }
+diff --git a/dom/html/HTMLSelectElement.cpp b/dom/html/HTMLSelectElement.cpp
+index b8399338bf37..39379e34944f 100644
+--- a/dom/html/HTMLSelectElement.cpp
++++ b/dom/html/HTMLSelectElement.cpp
+@@ -6,7 +6,6 @@
+ 
+ #include "mozilla/dom/HTMLSelectElement.h"
+ 
+-#include "ButtonControlFrame.h"
+ #include "mozAutoDocUpdate.h"
+ #include "mozilla/BasicEvents.h"
+ #include "mozilla/EventDispatcher.h"
+@@ -21,6 +20,7 @@
+ #include "mozilla/dom/HTMLSelectElementBinding.h"
+ #include "mozilla/dom/UnionTypes.h"
+ #include "mozilla/dom/WindowGlobalChild.h"
++#include "nsComboboxControlFrame.h"
+ #include "nsContentCreatorFunctions.h"
+ #include "nsContentList.h"
+ #include "nsContentUtils.h"
+@@ -30,12 +30,10 @@
+ #include "nsISelectControlFrame.h"
+ #include "nsLayoutUtils.h"
+ #include "nsListControlFrame.h"
++#include "nsServiceManagerUtils.h"
++#include "nsStyleConsts.h"
+ #include "nsTextNode.h"
+ 
+-#ifdef ACCESSIBILITY
+-#  include "nsAccessibilityService.h"
+-#endif
+-
+ NS_IMPL_NS_NEW_HTML_ELEMENT_CHECK_PARSER(Select)
+ 
+ namespace mozilla::dom {
+@@ -132,52 +130,6 @@ HTMLSelectElement::HTMLSelectElement(
+   // Set up our default state: enabled, optional, and valid.
+   AddStatesSilently(ElementState::ENABLED | ElementState::OPTIONAL_ |
+                     ElementState::VALID);
+-
+-  AddMutationObserver(this);
+-  SetupShadowTree();
+-}
+-
+-void HTMLSelectElement::SetupShadowTree() {
+-  AttachAndSetUAShadowRoot(NotifyUAWidgetSetup::No);
+-  RefPtr<ShadowRoot> sr = GetShadowRoot();
+-  if (NS_WARN_IF(!sr)) {
+-    return;
+-  }
+-  sr->AppendBuiltInStyleSheet(BuiltInStyleSheet::Select);
+-  // For now, we append a <label> with a text node, a <span> (for the menulist
+-  // icon), and an hidden <slot> element.
+-  Document* doc = OwnerDoc();
+-  RefPtr label = doc->CreateHTMLElement(nsGkAtoms::label);
+-  label->SetPseudoElementType(PseudoStyleType::MozSelectContent);
+-  {
+-    // This matches ButtonControlFrame::EnsureNonEmptyLabel.
+-    RefPtr text = doc->CreateTextNode(u"\ufeff"_ns);
+-    label->AppendChildTo(text, false, IgnoreErrors());
+-  }
+-  sr->AppendChildTo(label, false, IgnoreErrors());
+-  RefPtr icon = doc->CreateHTMLElement(nsGkAtoms::span);
+-  icon->SetPseudoElementType(PseudoStyleType::MozSelectPickerIcon);
+-  {
+-    RefPtr text = doc->CreateTextNode(u"\ufeff"_ns);
+-    icon->AppendChildTo(text, false, IgnoreErrors());
+-  }
+-  sr->AppendChildTo(icon, false, IgnoreErrors());
+-  RefPtr slot = doc->CreateHTMLElement(nsGkAtoms::slot);
+-  sr->AppendChildTo(slot, false, IgnoreErrors());
+-}
+-
+-Text* HTMLSelectElement::GetSelectedContentText() const {
+-  auto* sr = GetShadowRoot();
+-  if (!sr) {
+-    MOZ_ASSERT(OwnerDoc()->IsStaticDocument());
+-    return nullptr;
+-  }
+-  auto* label = sr->GetFirstChild();
+-  MOZ_DIAGNOSTIC_ASSERT(label);
+-  MOZ_DIAGNOSTIC_ASSERT(label->IsHTMLElement(nsGkAtoms::label));
+-  MOZ_DIAGNOSTIC_ASSERT(label->GetFirstChild());
+-  MOZ_DIAGNOSTIC_ASSERT(label->GetFirstChild()->IsText());
+-  return label->GetFirstChild()->AsText();
+ }
+ 
+ // ISupports
+@@ -427,7 +379,8 @@ nsresult HTMLSelectElement::RemoveOptionsFromList(nsIContent* aOptions,
+ 
+   if (numRemoved) {
+     // Tell the widget we removed the options
+-    if (nsISelectControlFrame* selectFrame = GetSelectFrame()) {
++    nsISelectControlFrame* selectFrame = GetSelectFrame();
++    if (selectFrame) {
+       nsAutoScriptBlocker scriptBlocker;
+       for (int32_t i = aListIndex; i < aListIndex + numRemoved; ++i) {
+         selectFrame->RemoveOption(i);
+@@ -748,9 +701,11 @@ void HTMLSelectElement::SetSelectedIndexInternal(int32_t aIndex, bool aNotify) {
+ 
+   SetOptionsSelectedByIndex(aIndex, aIndex, mask);
+ 
+-  if (nsISelectControlFrame* selectFrame = GetSelectFrame()) {
++  nsISelectControlFrame* selectFrame = GetSelectFrame();
++  if (selectFrame) {
+     selectFrame->OnSetSelectedIndex(oldSelectedIndex, mSelectedIndex);
+   }
++
+   OnSelectionChanged();
+ }
+ 
+@@ -784,12 +739,6 @@ void HTMLSelectElement::OnOptionSelected(nsISelectControlFrame* aSelectFrame,
+     aSelectFrame->OnOptionSelected(aIndex, aSelected);
+   }
+ 
+-#ifdef ACCESSIBILITY
+-  if (nsAccessibilityService* acc = GetAccService(); acc && IsCombobox()) {
+-    acc->ComboboxValueChanged(this);
+-  }
+-#endif
+-
+   UpdateSelectedOptions();
+   UpdateValueMissingValidityState();
+   UpdateValidityElementStates(aNotify);
+@@ -1226,6 +1175,8 @@ void HTMLSelectElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
+ void HTMLSelectElement::DoneAddingChildren(bool aHaveNotified) {
+   mIsDoneAddingChildren = true;
+ 
++  nsISelectControlFrame* selectFrame = GetSelectFrame();
++
+   // If we foolishly tried to restore before we were done adding
+   // content, restore the rest of the options proper-like
+   if (mRestoreState) {
+@@ -1234,8 +1185,8 @@ void HTMLSelectElement::DoneAddingChildren(bool aHaveNotified) {
+   }
+ 
+   // Notify the frame
+-  if (nsISelectControlFrame* selectFrame = GetSelectFrame()) {
+-    selectFrame->DoneAddingChildren();
++  if (selectFrame) {
++    selectFrame->DoneAddingChildren(true);
+   }
+ 
+   if (!mInhibitStateRestoration) {
+@@ -1252,9 +1252,6 @@ void HTMLSelectElement::DoneAddingChildren(bool aHaveNotified) {
+ 
+     // And now make sure we update our content state too
+     UpdateValidityElementStates(aHaveNotified);
+-
+-    // Similar deal with the selected option text.
+-    SelectedContentTextMightHaveChanged();
+   }
+ 
+   mDefaultSelectionSet = true;
+@@ -1641,7 +1592,6 @@ void HTMLSelectElement::FieldSetDisabledChanged(bool aNotify) {
+ }
+ 
+ void HTMLSelectElement::OnSelectionChanged() {
+-  SelectedContentTextMightHaveChanged();
+   if (!mDefaultSelectionSet) {
+     return;
+   }
+@@ -1670,38 +1620,10 @@ void HTMLSelectElement::SetUserInteracted(bool aInteracted) {
+ void HTMLSelectElement::SetPreviewValue(const nsAString& aValue) {
+   mPreviewValue = aValue;
+   nsContentUtils::RemoveNewlines(mPreviewValue);
+-  SelectedContentTextMightHaveChanged();
+-}
+-
+-static void OptionValueMightHaveChanged(nsIContent* aMutatingNode) {
+-#ifdef ACCESSIBILITY
+-  if (nsAccessibilityService* acc = GetAccService()) {
+-    acc->ComboboxOptionMaybeChanged(aMutatingNode->OwnerDoc()->GetPresShell(),
+-                                    aMutatingNode);
++  nsComboboxControlFrame* comboFrame = do_QueryFrame(GetPrimaryFrame());
++  if (comboFrame) {
++    comboFrame->RedisplaySelectedText();
+   }
+-#endif
+-}
+-
+-void HTMLSelectElement::SelectedContentTextMightHaveChanged() {
+-  RefPtr textNode = GetSelectedContentText();
+-  if (!textNode) {
+-    return;
+-  }
+-  nsAutoString newText;
+-  if (!mPreviewValue.IsEmpty()) {
+-    newText.Assign(mPreviewValue);
+-  } else if (auto* selectedOption = Item(SelectedIndex())) {
+-    selectedOption->GetRenderedLabel(newText);
+-  }
+-  ButtonControlFrame::EnsureNonEmptyLabel(newText);
+-  textNode->SetText(newText, true);
+-#ifdef ACCESSIBILITY
+-  if (nsAccessibilityService* acc = GetAccService()) {
+-    if (nsIFrame* f = GetPrimaryFrame()) {
+-      acc->ScheduleAccessibilitySubtreeUpdate(f->PresShell(), this);
+-    }
+-  }
+-#endif
+ }
+ 
+ void HTMLSelectElement::UserFinishedInteracting(bool aChanged) {
+@@ -1720,51 +1642,6 @@ void HTMLSelectElement::UserFinishedInteracting(bool aChanged) {
+                                        CanBubble::eYes, Cancelable::eNo);
+ }
+ 
+-void HTMLSelectElement::AttributeChanged(dom::Element* aElement,
+-                                         int32_t aNameSpaceID,
+-                                         nsAtom* aAttribute, AttrModType,
+-                                         const nsAttrValue* aOldValue) {
+-  if (aElement->IsHTMLElement(nsGkAtoms::option) &&
+-      aNameSpaceID == kNameSpaceID_None && aAttribute == nsGkAtoms::label) {
+-    // A11y has its own mutation listener for this so no need to do
+-    // OptionValueMightHaveChanged().
+-    SelectedContentTextMightHaveChanged();
+-  }
+-}
+-
+-void HTMLSelectElement::CharacterDataChanged(nsIContent* aContent,
+-                                             const CharacterDataChangeInfo&) {
+-  if (IsCombobox() && nsContentUtils::IsInSameAnonymousTree(this, aContent)) {
+-    OptionValueMightHaveChanged(aContent);
+-    SelectedContentTextMightHaveChanged();
+-  }
+-}
+-
+-void HTMLSelectElement::ContentWillBeRemoved(nsIContent* aChild,
+-                                             const ContentRemoveInfo&) {
+-  if (IsCombobox() && nsContentUtils::IsInSameAnonymousTree(this, aChild)) {
+-    OptionValueMightHaveChanged(aChild);
+-    SelectedContentTextMightHaveChanged();
+-  }
+-}
+-
+-void HTMLSelectElement::ContentAppended(nsIContent* aFirstNewContent,
+-                                        const ContentAppendInfo&) {
+-  if (IsCombobox() &&
+-      nsContentUtils::IsInSameAnonymousTree(this, aFirstNewContent)) {
+-    OptionValueMightHaveChanged(aFirstNewContent);
+-    SelectedContentTextMightHaveChanged();
+-  }
+-}
+-
+-void HTMLSelectElement::ContentInserted(nsIContent* aChild,
+-                                        const ContentInsertInfo&) {
+-  if (IsCombobox() && nsContentUtils::IsInSameAnonymousTree(this, aChild)) {
+-    OptionValueMightHaveChanged(aChild);
+-    SelectedContentTextMightHaveChanged();
+-  }
+-}
+-
+ JSObject* HTMLSelectElement::WrapNode(JSContext* aCx,
+                                       JS::Handle<JSObject*> aGivenProto) {
+   return HTMLSelectElement_Binding::Wrap(aCx, this, aGivenProto);
+diff --git a/dom/html/HTMLSelectElement.h b/dom/html/HTMLSelectElement.h
+index 70f5a1b86dc6..973f9c22d2a3 100644
+--- a/dom/html/HTMLSelectElement.h
++++ b/dom/html/HTMLSelectElement.h
+@@ -17,7 +17,6 @@
+ #include "nsContentUtils.h"
+ #include "nsError.h"
+ #include "nsGenericHTMLElement.h"
+-#include "nsStubMutationObserver.h"
+ 
+ class nsContentList;
+ class nsIDOMHTMLOptionElement;
+@@ -76,7 +75,6 @@ class MOZ_STACK_CLASS SafeOptionListMutation {
+  * Implementation of &lt;select&gt;
+  */
+ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
+-                                public nsStubMutationObserver,
+                                 public ConstraintValidation {
+  public:
+   /**
+@@ -117,13 +115,6 @@ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
+   // nsISupports
+   NS_DECL_ISUPPORTS_INHERITED
+ 
+-  // For comboboxes, we need to keep the list up to date when options change.
+-  NS_DECL_NSIMUTATIONOBSERVER_ATTRIBUTECHANGED
+-  NS_DECL_NSIMUTATIONOBSERVER_CHARACTERDATACHANGED
+-  NS_DECL_NSIMUTATIONOBSERVER_CONTENTREMOVED
+-  NS_DECL_NSIMUTATIONOBSERVER_CONTENTAPPENDED
+-  NS_DECL_NSIMUTATIONOBSERVER_CONTENTINSERTED
+-
+   int32_t TabIndexDefault() override;
+ 
+   // Element
+@@ -332,7 +323,9 @@ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
+                aError);
+   }
+ 
+-  /** Is this a combobox? */
++  /**
++   * Is this a combobox?
++   */
+   bool IsCombobox() const { return !Multiple() && Size() <= 1; }
+ 
+   bool OpenInParentProcess() const { return mIsOpenInParentProcess; }
+@@ -349,13 +342,6 @@ class HTMLSelectElement final : public nsGenericHTMLFormControlElementWithState,
+   }
+   void GetAutofillState(nsAString& aState) { GetFormAutofillState(aState); }
+ 
+-  void SetupShadowTree();
+-
+-  // Returns the text node that has the selected <option>'s text.
+-  // Note that it might return null for printing.
+-  Text* GetSelectedContentText() const;
+-  void SelectedContentTextMightHaveChanged();
+-
+  protected:
+   virtual ~HTMLSelectElement() = default;
+ 
+diff --git a/layout/base/nsCSSFrameConstructor.cpp b/layout/base/nsCSSFrameConstructor.cpp
+index 9e2e05c32553..d7e4b1ae020c 100644
+--- a/layout/base/nsCSSFrameConstructor.cpp
++++ b/layout/base/nsCSSFrameConstructor.cpp
+@@ -3429,31 +3429,25 @@ nsCSSFrameConstructor::FindHTMLData(const Element& aElement,
+                    aParentFrame->GetParent()->IsFieldSetFrame(),
+                "Unexpected parent for fieldset content anon box");
+ 
+-  switch (aStyle.GetPseudoType()) {
+-    case PseudoStyleType::ViewTransitionOld:
+-    case PseudoStyleType::ViewTransitionNew: {
++  if (aElement.IsInNativeAnonymousSubtree()) {
++    if (aElement.NodeInfo()->NameAtom() == nsGkAtoms::label && aParentFrame) {
++      if (aParentFrame->IsFileControlFrame()) {
++        static constexpr FrameConstructionData sFileLabelData(
++            NS_NewFileControlLabelFrame);
++        return &sFileLabelData;
++      }
++      if (aParentFrame->IsComboboxControlFrame()) {
++        static constexpr FrameConstructionData sComboboxLabelData(
++            NS_NewComboboxLabelFrame);
++        return &sComboboxLabelData;
++      }
++    }
++    if (aStyle.GetPseudoType() == PseudoStyleType::ViewTransitionOld ||
++        aStyle.GetPseudoType() == PseudoStyleType::ViewTransitionNew) {
+       static constexpr FrameConstructionData sViewTransitionData(
+           NS_NewImageFrameForViewTransition);
+       return &sViewTransitionData;
+     }
+-    case PseudoStyleType::MozSelectContent: {
+-      if (aParentFrame && aParentFrame->IsComboboxControlFrame()) {
+-        static constexpr FrameConstructionData sComboboxLabelData(
+-            NS_NewComboboxLabelFrame);
+-        return &sComboboxLabelData;
+-      }
+-      break;
+-    }
+-    case PseudoStyleType::MozFileContent: {
+-      if (aParentFrame && aParentFrame->IsFileControlFrame()) {
+-        static constexpr FrameConstructionData sFileLabelData(
+-            NS_NewFileControlLabelFrame);
+-        return &sFileLabelData;
+-      }
+-      break;
+-    }
+-    default:
+-      break;
+   }
+ 
+   static constexpr FrameConstructionDataByTag sHTMLData[] = {
+@@ -4964,19 +4964,14 @@ void nsCSSFrameConstructor::AddFrameConstructionItems(
+ //
+ // Never create frames for non-option/optgroup kids of <select> and non-option
+ // kids of <optgroup> inside a <select>.
+-static bool ShouldSuppressFrameInListboxSelect(const nsIContent* aParent,
+-                                               const nsIContent& aChild) {
++static bool ShouldSuppressFrameInSelect(const nsIContent* aParent,
++                                        const nsIContent& aChild) {
+   if (!aParent ||
+       !aParent->IsAnyOfHTMLElements(nsGkAtoms::select, nsGkAtoms::optgroup,
+                                     nsGkAtoms::option)) {
+     return false;
+   }
+ 
+-  if (const auto* select = HTMLSelectElement::FromNode(aParent);
+-      select && select->IsCombobox()) {
+-    return false;
+-  }
+-
+   // Allow native anonymous content no matter what.
+   if (aChild.IsRootOfNativeAnonymousSubtree()) {
+     return false;
+@@ -5155,7 +5150,7 @@ void nsCSSFrameConstructor::AddFrameConstructionItemsInternal(
+   }
+ 
+   nsIContent* parent = aParentFrame ? aParentFrame->GetContent() : nullptr;
+-  if (ShouldSuppressFrameInListboxSelect(parent, *aContent)) {
++  if (ShouldSuppressFrameInSelect(parent, *aContent)) {
+     return;
+   }
+ 
+diff --git a/layout/forms/ButtonControlFrame.cpp b/layout/forms/ButtonControlFrame.cpp
+index 0ec0526e2393..97ce4b3abb08 100644
+--- a/layout/forms/ButtonControlFrame.cpp
++++ b/layout/forms/ButtonControlFrame.cpp
+@@ -12,6 +12,11 @@ using namespace mozilla;
+ 
+ namespace mozilla {
+ 
++NS_QUERYFRAME_HEAD(ButtonControlFrame)
++  NS_QUERYFRAME_ENTRY(nsIAnonymousContentCreator)
++  NS_QUERYFRAME_ENTRY(ButtonControlFrame)
++NS_QUERYFRAME_TAIL_INHERITING(nsBlockFrame)
++
+ void ButtonControlFrame::EnsureNonEmptyLabel(nsAString& aLabel) {
+   if (aLabel.IsEmpty()) {
+     // Have to use a space character of some sort for line-block-size
+diff --git a/layout/forms/ButtonControlFrame.h b/layout/forms/ButtonControlFrame.h
+index c3fb7a3d565a..4fc79fb757da 100644
+--- a/layout/forms/ButtonControlFrame.h
++++ b/layout/forms/ButtonControlFrame.h
+@@ -8,27 +8,32 @@
+ #define LAYOUT_FORMS_BUTTONCONTROLFRAME_H_
+ 
+ #include "nsBlockFrame.h"
++#include "nsIAnonymousContentCreator.h"
+ 
+ class nsTextNode;
+ 
+ namespace mozilla {
+ 
+ // Abstract base class for:
+-//  * Combobox <select>.
++//  * Combobox <select>
+ //  * <input> with type={button,reset,submit}
+ //  * <input> with type=color
+ // Each of which are basically buttons but with different native-anonymous
+-// content / shadow tree. Note that this isn't used to implement <button> itself
+-// (that uses regular frames like nsBlockFrame or nsGridContainerFrame or so,
+-// depending on the display type).
+-class ButtonControlFrame : public nsBlockFrame {
++// content. Note that this isn't used to implement <button> itself (that uses
++// regular frames like nsBlockFrame or nsGridContainerFrame or so, depending on
++// the display type).
++class ButtonControlFrame : public nsBlockFrame,
++                           public nsIAnonymousContentCreator {
+  public:
++  NS_DECL_QUERYFRAME_TARGET(ButtonControlFrame)
++  NS_DECL_QUERYFRAME
++  NS_DECL_ABSTRACT_FRAME(ButtonControlFrame)
++
+   ButtonControlFrame(ComputedStyle* aStyle, nsPresContext* aPc,
+                      ClassID aClassID)
+       : nsBlockFrame(aStyle, aPc, aClassID) {
+     MOZ_ASSERT(IsReplaced(), "Our subclasses should be replaced elements");
+   }
+-  NS_DECL_ABSTRACT_FRAME(ButtonControlFrame)
+   nsContainerFrame* GetContentInsertionFrame() override { return this; }
+   nsresult HandleEvent(nsPresContext* aPresContext,
+                        mozilla::WidgetGUIEvent* aEvent,
+diff --git a/layout/forms/HTMLSelectEventListener.cpp b/layout/forms/HTMLSelectEventListener.cpp
+index ae7fa460c965..04fc3056ba56 100644
+--- a/layout/forms/HTMLSelectEventListener.cpp
++++ b/layout/forms/HTMLSelectEventListener.cpp
+@@ -16,7 +16,6 @@
+ #include "mozilla/dom/HTMLSelectElement.h"
+ #include "mozilla/dom/MouseEvent.h"
+ #include "nsComboboxControlFrame.h"
+-#include "nsComputedDOMStyle.h"
+ #include "nsListControlFrame.h"
+ 
+ using namespace mozilla;
+@@ -31,6 +30,11 @@ static bool IsOptionInteractivelySelectable(HTMLSelectElement& aSelect,
+   if (!aIsCombobox) {
+     return aOption.GetPrimaryFrame();
+   }
++  // In dropdown mode no options have frames, but we can check whether they
++  // are rendered / not in a display: none subtree.
++  if (!aOption.HasServoData() || Servo_Element_IsDisplayNone(&aOption)) {
++    return false;
++  }
+   // TODO(emilio): This is a bit silly and doesn't match the options that we
+   // show / don't show in the dropdown, but matches the frame construction we
+   // do for multiple selects. For backwards compat also don't allow selecting
+@@ -40,12 +44,7 @@ static bool IsOptionInteractivelySelectable(HTMLSelectElement& aSelect,
+   // SelectChild.sys.mjs should be changed to match it.
+   for (Element* el = &aOption; el && el != &aSelect;
+        el = el->GetParentElement()) {
+-    RefPtr style = nsComputedDOMStyle::GetComputedStyleNoFlush(el);
+-    if (!style) {
+-      return false;
+-    }
+-    auto display = style->StyleDisplay()->mDisplay;
+-    if (display == StyleDisplay::None || display == StyleDisplay::Contents) {
++    if (Servo_Element_IsDisplayContents(el)) {
+       return false;
+     }
+   }
+@@ -92,7 +91,8 @@ class MOZ_RAII AutoIncrementalSearchHandler {
+   bool mResettingCancelled = false;
+ };
+ 
+-NS_IMPL_ISUPPORTS(HTMLSelectEventListener, nsIDOMEventListener)
++NS_IMPL_ISUPPORTS(HTMLSelectEventListener, nsIMutationObserver,
++                  nsIDOMEventListener)
+ 
+ HTMLSelectEventListener::~HTMLSelectEventListener() {
+   if (sLastKeyListener == uintptr_t(this)) {
+@@ -253,6 +253,10 @@ void HTMLSelectEventListener::Attach() {
+   mElement->AddSystemEventListener(u"mousedown"_ns, this, false, false);
+   mElement->AddSystemEventListener(u"mouseup"_ns, this, false, false);
+   mElement->AddSystemEventListener(u"mousemove"_ns, this, false, false);
++
++  if (mIsCombobox) {
++    mElement->AddMutationObserver(this);
++  }
+ }
+ 
+ void HTMLSelectEventListener::Detach() {
+@@ -261,6 +265,26 @@ void HTMLSelectEventListener::Detach() {
+   mElement->RemoveSystemEventListener(u"mousedown"_ns, this, false);
+   mElement->RemoveSystemEventListener(u"mouseup"_ns, this, false);
+   mElement->RemoveSystemEventListener(u"mousemove"_ns, this, false);
++
++  if (mIsCombobox) {
++    mElement->RemoveMutationObserver(this);
++    if (mElement->OpenInParentProcess()) {
++      nsContentUtils::AddScriptRunner(NS_NewRunnableFunction(
++          "HTMLSelectEventListener::Detach", [element = mElement] {
++            // Don't hide the dropdown if the element has another frame already,
++            // this prevents closing dropdowns on reframe, see bug 1440506.
++            //
++            // FIXME(emilio): The flush is needed to deal with reframes started
++            // from DOM node removal. But perhaps we can be a bit smarter here.
++            if (!element->IsCombobox() ||
++                !element->GetPrimaryFrame(FlushType::Frames)) {
++              nsContentUtils::DispatchChromeEvent(
++                  element->OwnerDoc(), element, u"mozhidedropdown"_ns,
++                  CanBubble::eYes, Cancelable::eNo);
++            }
++          }));
++    }
++  }
+ }
+ 
+ const uint32_t kMaxDropdownRows = 20;  // matches the setting for 4.x browsers
+@@ -284,6 +308,76 @@ int32_t HTMLSelectEventListener::ItemsPerPage() const {
+   return AssertedCast<int32_t>(size - 1u);
+ }
+ 
++void HTMLSelectEventListener::OptionValueMightHaveChanged(
++    nsIContent* aMutatingNode) {
++#ifdef ACCESSIBILITY
++  if (nsAccessibilityService* acc = GetAccService()) {
++    acc->ComboboxOptionMaybeChanged(mElement->OwnerDoc()->GetPresShell(),
++                                    aMutatingNode);
++  }
++#endif
++}
++
++void HTMLSelectEventListener::AttributeChanged(dom::Element* aElement,
++                                               int32_t aNameSpaceID,
++                                               nsAtom* aAttribute, AttrModType,
++                                               const nsAttrValue* aOldValue) {
++  if (aElement->IsHTMLElement(nsGkAtoms::option) &&
++      aNameSpaceID == kNameSpaceID_None && aAttribute == nsGkAtoms::label) {
++    // A11y has its own mutation listener for this so no need to do
++    // OptionValueMightHaveChanged().
++    ComboboxMightHaveChanged();
++  }
++}
++
++void HTMLSelectEventListener::CharacterDataChanged(
++    nsIContent* aContent, const CharacterDataChangeInfo&) {
++  if (nsContentUtils::IsInSameAnonymousTree(mElement, aContent)) {
++    OptionValueMightHaveChanged(aContent);
++    ComboboxMightHaveChanged();
++  }
++}
++
++void HTMLSelectEventListener::ContentWillBeRemoved(nsIContent* aChild,
++                                                   const ContentRemoveInfo&) {
++  if (nsContentUtils::IsInSameAnonymousTree(mElement, aChild)) {
++    OptionValueMightHaveChanged(aChild);
++    ComboboxMightHaveChanged();
++  }
++}
++
++void HTMLSelectEventListener::ContentAppended(nsIContent* aFirstNewContent,
++                                              const ContentAppendInfo&) {
++  if (nsContentUtils::IsInSameAnonymousTree(mElement, aFirstNewContent)) {
++    OptionValueMightHaveChanged(aFirstNewContent);
++    ComboboxMightHaveChanged();
++  }
++}
++
++void HTMLSelectEventListener::ContentInserted(nsIContent* aChild,
++                                              const ContentInsertInfo&) {
++  if (nsContentUtils::IsInSameAnonymousTree(mElement, aChild)) {
++    OptionValueMightHaveChanged(aChild);
++    ComboboxMightHaveChanged();
++  }
++}
++
++void HTMLSelectEventListener::ComboboxMightHaveChanged() {
++  nsIFrame* f = mElement->GetPrimaryFrame();
++  if (!f) {
++    return;
++  }
++  PresShell* ps = f->PresShell();
++#ifdef ACCESSIBILITY
++  if (nsAccessibilityService* acc = GetAccService()) {
++    acc->ScheduleAccessibilitySubtreeUpdate(ps, mElement);
++  }
++#endif
++  if (nsComboboxControlFrame* combobox = do_QueryFrame(f)) {
++    combobox->RedisplaySelectedText();
++  }
++}
++
+ void HTMLSelectEventListener::FireOnInputAndOnChange() {
+   RefPtr<HTMLSelectElement> element = mElement;
+   element->UserFinishedInteracting(/* aChanged = */ true);
+diff --git a/layout/forms/HTMLSelectEventListener.h b/layout/forms/HTMLSelectEventListener.h
+index c5af5f7687a9..452610a2175c 100644
+--- a/layout/forms/HTMLSelectEventListener.h
++++ b/layout/forms/HTMLSelectEventListener.h
+@@ -8,6 +8,7 @@
+ #define mozilla_HTMLSelectEventListener_h
+ 
+ #include "nsIDOMEventListener.h"
++#include "nsStubMutationObserver.h"
+ 
+ class nsIFrame;
+ class nsListControlFrame;
+@@ -27,7 +28,8 @@ class Event;
+  * Frames are not refcounted so they can't be used as event listeners.
+  */
+ 
+-class HTMLSelectEventListener final : public nsIDOMEventListener {
++class HTMLSelectEventListener final : public nsStubMutationObserver,
++                                      public nsIDOMEventListener {
+  public:
+   enum class SelectType : uint8_t { Listbox, Combobox };
+   HTMLSelectEventListener(dom::HTMLSelectElement& aElement,
+@@ -38,6 +40,13 @@ class HTMLSelectEventListener final : public nsIDOMEventListener {
+ 
+   NS_DECL_ISUPPORTS
+ 
++  // For comboboxes, we need to keep the list up to date when options change.
++  NS_DECL_NSIMUTATIONOBSERVER_ATTRIBUTECHANGED
++  NS_DECL_NSIMUTATIONOBSERVER_CHARACTERDATACHANGED
++  NS_DECL_NSIMUTATIONOBSERVER_CONTENTREMOVED
++  NS_DECL_NSIMUTATIONOBSERVER_CONTENTAPPENDED
++  NS_DECL_NSIMUTATIONOBSERVER_CONTENTINSERTED
++
+   // nsIDOMEventListener
+   MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHOD HandleEvent(dom::Event*) override;
+ 
+@@ -78,6 +87,9 @@ class HTMLSelectEventListener final : public nsIDOMEventListener {
+   dom::HTMLOptionElement* GetNonDisabledOptionFrom(
+       int32_t aFromIndex, int32_t* aFoundIndex = nullptr) const;
+ 
++  void ComboboxMightHaveChanged();
++  void OptionValueMightHaveChanged(nsIContent* aMutatingNode);
++
+   ~HTMLSelectEventListener();
+ 
+   RefPtr<dom::HTMLSelectElement> mElement;
+diff --git a/layout/forms/InputButtonControlFrame.cpp b/layout/forms/InputButtonControlFrame.cpp
+index c41e3b838630..29dc2aee1c54 100644
+--- a/layout/forms/InputButtonControlFrame.cpp
++++ b/layout/forms/InputButtonControlFrame.cpp
+@@ -8,7 +8,6 @@
+ #include "mozilla/PresShell.h"
+ #include "mozilla/dom/HTMLInputElement.h"
+ #include "nsContentUtils.h"
+-#include "nsIAnonymousContentCreator.h"
+ #include "nsIFormControl.h"
+ #include "nsTextNode.h"
+ 
+@@ -17,14 +16,12 @@ using namespace mozilla;
+ namespace mozilla {
+ 
+ /* A frame for <input type={button,reset,submit} */
+-class InputButtonControlFrame final : public ButtonControlFrame,
+-                                      public nsIAnonymousContentCreator {
++class InputButtonControlFrame final : public ButtonControlFrame {
+  public:
+   InputButtonControlFrame(ComputedStyle* aStyle, nsPresContext* aPc)
+       : ButtonControlFrame(aStyle, aPc, kClassID) {}
+ 
+   NS_DECL_FRAMEARENA_HELPERS(InputButtonControlFrame)
+-  NS_DECL_QUERYFRAME
+ 
+ #ifdef DEBUG_FRAME_DUMP
+   nsresult GetFrameName(nsAString& aResult) const override {
+@@ -51,10 +48,6 @@ class InputButtonControlFrame final : public ButtonControlFrame,
+ 
+ NS_IMPL_FRAMEARENA_HELPERS(InputButtonControlFrame);
+ 
+-NS_QUERYFRAME_HEAD(InputButtonControlFrame)
+-  NS_QUERYFRAME_ENTRY(nsIAnonymousContentCreator)
+-NS_QUERYFRAME_TAIL_INHERITING(ButtonControlFrame)
+-
+ void InputButtonControlFrame::Destroy(DestroyContext& aContext) {
+   aContext.AddAnonymousContent(mTextContent.forget());
+   ButtonControlFrame::Destroy(aContext);
+diff --git a/layout/forms/nsColorControlFrame.cpp b/layout/forms/nsColorControlFrame.cpp
+index 02802e01e01d..b6c997ef18d7 100644
+--- a/layout/forms/nsColorControlFrame.cpp
++++ b/layout/forms/nsColorControlFrame.cpp
+@@ -36,7 +36,6 @@ NS_IMPL_FRAMEARENA_HELPERS(nsColorControlFrame)
+ 
+ NS_QUERYFRAME_HEAD(nsColorControlFrame)
+   NS_QUERYFRAME_ENTRY(nsColorControlFrame)
+-  NS_QUERYFRAME_ENTRY(nsIAnonymousContentCreator)
+ NS_QUERYFRAME_TAIL_INHERITING(ButtonControlFrame)
+ 
+ void nsColorControlFrame::Destroy(DestroyContext& aContext) {
+diff --git a/layout/forms/nsColorControlFrame.h b/layout/forms/nsColorControlFrame.h
+index e34d6dd60eca..54d5290944e3 100644
+--- a/layout/forms/nsColorControlFrame.h
++++ b/layout/forms/nsColorControlFrame.h
+@@ -9,7 +9,6 @@
+ 
+ #include "ButtonControlFrame.h"
+ #include "nsCOMPtr.h"
+-#include "nsIAnonymousContentCreator.h"
+ 
+ namespace mozilla {
+ class PresShell;
+@@ -17,8 +16,7 @@ class PresShell;
+ 
+ // Class which implements the input type=color
+ 
+-class nsColorControlFrame final : public mozilla::ButtonControlFrame,
+-                                  public nsIAnonymousContentCreator {
++class nsColorControlFrame final : public mozilla::ButtonControlFrame {
+   typedef mozilla::dom::Element Element;
+ 
+  public:
+diff --git a/layout/forms/nsComboboxControlFrame.cpp b/layout/forms/nsComboboxControlFrame.cpp
+index 6b6906a44cef..69ea19c18846 100644
+--- a/layout/forms/nsComboboxControlFrame.cpp
++++ b/layout/forms/nsComboboxControlFrame.cpp
+@@ -10,21 +10,35 @@
+ 
+ #include "HTMLSelectEventListener.h"
+ #include "gfxContext.h"
++#include "gfxUtils.h"
++#include "mozilla/AsyncEventDispatcher.h"
+ #include "mozilla/Likely.h"
+ #include "mozilla/PresShell.h"
+ #include "mozilla/PresShellInlines.h"
+ #include "mozilla/dom/Document.h"
+ #include "mozilla/dom/HTMLSelectElement.h"
++#include "nsCOMPtr.h"
+ #include "nsContentUtils.h"
++#include "nsGkAtoms.h"
++#include "nsISelectControlFrame.h"
+ #include "nsITheme.h"
+ #include "nsLayoutUtils.h"
+ #include "nsStyleConsts.h"
+ #include "nsTextFrameUtils.h"
++#include "nsTextNode.h"
+ #include "nsTextRunTransformations.h"
+ 
+ using namespace mozilla;
+ using namespace mozilla::gfx;
+ 
++NS_IMETHODIMP
++nsComboboxControlFrame::RedisplayTextEvent::Run() {
++  if (mControlFrame) {
++    mControlFrame->HandleRedisplayTextEvent();
++  }
++  return NS_OK;
++}
++
+ // Drop down list event management.
+ // The combo box uses the following strategy for managing the drop-down list.
+ // If the combo box or its arrow button is clicked on the drop-down list is
+@@ -53,6 +67,7 @@ nsComboboxControlFrame::~nsComboboxControlFrame() = default;
+ 
+ NS_QUERYFRAME_HEAD(nsComboboxControlFrame)
+   NS_QUERYFRAME_ENTRY(nsComboboxControlFrame)
++  NS_QUERYFRAME_ENTRY(nsISelectControlFrame)
+ NS_QUERYFRAME_TAIL_INHERITING(ButtonControlFrame)
+ 
+ #ifdef ACCESSIBILITY
+@@ -101,8 +116,8 @@ int32_t nsComboboxControlFrame::CharCountOfLargestOptionForInflation() const {
+   return int32_t(maxLength);
+ }
+ 
+-nscoord nsComboboxControlFrame::GetLongestOptionISize(
+-    gfxContext* aRenderingContext) const {
++nscoord nsComboboxControlFrame::GetOptionISize(gfxContext* aRenderingContext,
++                                               Type aType) const {
+   // Compute the width of each option's (potentially text-transformed) text,
+   // and use the widest one as part of our intrinsic size.
+   nscoord maxOptionSize = 0;
+@@ -135,8 +150,12 @@ nscoord nsComboboxControlFrame::GetLongestOptionISize(
+     return nsLayoutUtils::AppUnitWidthOfStringBidi(*stringToUse, this, *fm,
+                                                    *aRenderingContext);
+   };
+-  for (auto i : IntegerRange(Select().Options()->Length())) {
+-    maxOptionSize = std::max(maxOptionSize, GetOptionSize(i));
++  if (aType == Type::Longest) {
++    for (auto i : IntegerRange(Select().Options()->Length())) {
++      maxOptionSize = std::max(maxOptionSize, GetOptionSize(i));
++    }
++  } else {
++    maxOptionSize = GetOptionSize(mDisplayedIndex);
+   }
+   if (maxOptionSize) {
+     // HACK: Add one app unit to workaround silly Netgear router styling, see
+@@ -154,13 +173,12 @@ nscoord nsComboboxControlFrame::IntrinsicISize(const IntrinsicSizeInput& aInput,
+     return *containISize;
+   }
+ 
+-  if (StyleUIReset()->mFieldSizing == StyleFieldSizing::Content) {
+-    return ButtonControlFrame::IntrinsicISize(aInput, aType);
+-  }
+-
+   nscoord displayISize = 0;
+   if (!containISize) {
+-    displayISize += GetLongestOptionISize(aInput.mContext);
++    auto optionType = StyleUIReset()->mFieldSizing == StyleFieldSizing::Content
++                          ? Type::Current
++                          : Type::Longest;
++    displayISize += GetOptionISize(aInput.mContext, optionType);
+   }
+ 
+   // Add room for the dropmarker button (if there is one).
+@@ -219,12 +237,121 @@ void nsComboboxControlFrame::Init(nsIContent* aContent,
+   ButtonControlFrame::Init(aContent, aParent, aPrevInFlow);
+   mEventListener = new HTMLSelectEventListener(
+       Select(), HTMLSelectEventListener::SelectType::Combobox);
++  mDisplayedIndex = Select().SelectedIndex();
++}
++
++nsresult nsComboboxControlFrame::RedisplaySelectedText() {
++  nsAutoScriptBlocker scriptBlocker;
++  mDisplayedIndex = Select().SelectedIndex();
++  return RedisplayText();
++}
++
++nsresult nsComboboxControlFrame::RedisplayText() {
++  nsAutoString currentLabel;
++  mDisplayLabel->GetFirstChild()->AsText()->GetData(currentLabel);
++
++  nsAutoString newLabel;
++  GetLabelText(newLabel);
++
++  // Revoke outstanding events to avoid out-of-order events which could mean
++  // displaying the wrong text.
++  mRedisplayTextEvent.Revoke();
++
++  if (currentLabel == newLabel) {
++    return NS_OK;
++  }
++
++  NS_ASSERTION(!nsContentUtils::IsSafeToRunScript(),
++               "If we happen to run our redisplay event now, we might kill "
++               "ourselves!");
++  mRedisplayTextEvent = new RedisplayTextEvent(this);
++  nsContentUtils::AddScriptRunner(mRedisplayTextEvent.get());
++  return NS_OK;
++}
++
++void nsComboboxControlFrame::UpdateLabelText() {
++  RefPtr<dom::Text> displayContent = mDisplayLabel->GetFirstChild()->AsText();
++  nsAutoString newLabel;
++  GetLabelText(newLabel);
++  displayContent->SetText(newLabel, true);
++}
++
++void nsComboboxControlFrame::HandleRedisplayTextEvent() {
++  // First, make sure that the content model is up to date and we've constructed
++  // the frames for all our content in the right places. Otherwise they'll end
++  // up under the wrong insertion frame when we UpdateLabel, since that
++  // flushes out the content sink by calling SetText on a DOM node with aNotify
++  // set to true.  See bug 289730.
++  AutoWeakFrame weakThis(this);
++  PresContext()->Document()->FlushPendingNotifications(
++      FlushType::ContentAndNotify);
++  if (!weakThis.IsAlive()) {
++    return;
++  }
++  mRedisplayTextEvent.Forget();
++  UpdateLabelText();
++  // Note: `this` might be dead here.
++}
++
++void nsComboboxControlFrame::GetLabelText(nsAString& aLabel) {
++  Select().GetPreviewValue(aLabel);
++  // Get the text to display
++  if (!aLabel.IsEmpty()) {
++    return;
++  }
++  if (mDisplayedIndex != -1) {
++    GetOptionText(mDisplayedIndex, aLabel);
++  }
++  EnsureNonEmptyLabel(aLabel);
+ }
+ 
+ bool nsComboboxControlFrame::IsDroppedDown() const {
+   return Select().OpenInParentProcess();
+ }
+ 
++//----------------------------------------------------------------------
++// nsISelectControlFrame
++//----------------------------------------------------------------------
++NS_IMETHODIMP
++nsComboboxControlFrame::DoneAddingChildren(bool aIsDone) { return NS_OK; }
++
++NS_IMETHODIMP
++nsComboboxControlFrame::AddOption(int32_t aIndex) {
++  if (aIndex <= mDisplayedIndex) {
++    ++mDisplayedIndex;
++  }
++
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++nsComboboxControlFrame::RemoveOption(int32_t aIndex) {
++  if (Select().Options()->Length()) {
++    if (aIndex < mDisplayedIndex) {
++      --mDisplayedIndex;
++    } else if (aIndex == mDisplayedIndex) {
++      mDisplayedIndex = 0;  // IE6 compat
++      RedisplayText();
++    }
++  } else {
++    // If we removed the last option, we need to blank things out
++    mDisplayedIndex = -1;
++    RedisplayText();
++  }
++  return NS_OK;
++}
++
++NS_IMETHODIMP_(void)
++nsComboboxControlFrame::OnSetSelectedIndex(int32_t aOldIndex,
++                                           int32_t aNewIndex) {
++  nsAutoScriptBlocker scriptBlocker;
++  mDisplayedIndex = aNewIndex;
++  RedisplayText();
++}
++
++// End nsISelectControlFrame
++//----------------------------------------------------------------------
++
+ nsresult nsComboboxControlFrame::HandleEvent(nsPresContext* aPresContext,
+                                              WidgetGUIEvent* aEvent,
+                                              nsEventStatus* aEventStatus) {
+@@ -237,6 +364,50 @@ nsresult nsComboboxControlFrame::HandleEvent(nsPresContext* aPresContext,
+   return ButtonControlFrame::HandleEvent(aPresContext, aEvent, aEventStatus);
+ }
+ 
++nsresult nsComboboxControlFrame::CreateAnonymousContent(
++    nsTArray<ContentInfo>& aElements) {
++  dom::Document* doc = mContent->OwnerDoc();
++  mDisplayLabel = doc->CreateHTMLElement(nsGkAtoms::label);
++  {
++    RefPtr<nsTextNode> text = doc->CreateEmptyTextNode();
++    mDisplayLabel->AppendChildTo(text, false, IgnoreErrors());
++    // set the value of the text node
++    UpdateLabelText();
++  }
++  aElements.AppendElement(mDisplayLabel);
++
++  if (HasDropDownButton()) {
++    mButtonContent = mContent->OwnerDoc()->CreateHTMLElement(nsGkAtoms::button);
++    {
++      // This gives the button a reasonable height. This could be done via CSS
++      // instead, but relative font units like 1lh don't play very well with our
++      // font inflation implementation, so we do it this way instead.
++      RefPtr<nsTextNode> text = doc->CreateTextNode(u"\ufeff"_ns);
++      mButtonContent->AppendChildTo(text, false, IgnoreErrors());
++    }
++    // Make someone to listen to the button.
++    mButtonContent->SetAttr(kNameSpaceID_None, nsGkAtoms::type, u"button"_ns,
++                            false);
++    // Set tabindex="-1" so that the button is not tabbable
++    mButtonContent->SetAttr(kNameSpaceID_None, nsGkAtoms::tabindex, u"-1"_ns,
++                            false);
++    aElements.AppendElement(mButtonContent);
++  }
++
++  return NS_OK;
++}
++
++void nsComboboxControlFrame::AppendAnonymousContentTo(
++    nsTArray<nsIContent*>& aElements, uint32_t aFilter) {
++  if (mDisplayLabel) {
++    aElements.AppendElement(mDisplayLabel);
++  }
++
++  if (mButtonContent) {
++    aElements.AppendElement(mButtonContent);
++  }
++}
++
+ namespace mozilla {
+ 
+ class ComboboxLabelFrame final : public nsBlockFrame {
+@@ -289,23 +460,38 @@ nsIFrame* NS_NewComboboxLabelFrame(PresShell* aPresShell,
+ }
+ 
+ void nsComboboxControlFrame::Destroy(DestroyContext& aContext) {
++  // Revoke any pending RedisplayTextEvent
++  mRedisplayTextEvent.Revoke();
+   mEventListener->Detach();
+-  auto& select = Select();
+-  if (select.OpenInParentProcess()) {
+-    nsContentUtils::AddScriptRunner(NS_NewRunnableFunction(
+-        "nsComboboxControlFrame::Destroy", [element = RefPtr{&select}] {
+-          // Don't hide the dropdown if the element has another frame already,
+-          // this prevents closing dropdowns on reframe, see bug 1440506.
+-          //
+-          // FIXME(emilio): The flush is needed to deal with reframes started
+-          // from DOM node removal. But perhaps we can be a bit smarter here.
+-          if (!element->IsCombobox() ||
+-              !element->GetPrimaryFrame(FlushType::Frames)) {
+-            nsContentUtils::DispatchChromeEvent(
+-                element->OwnerDoc(), element, u"mozhidedropdown"_ns,
+-                CanBubble::eYes, Cancelable::eNo);
+-          }
+-        }));
+-  }
++
++  aContext.AddAnonymousContent(mDisplayLabel.forget());
++  aContext.AddAnonymousContent(mButtonContent.forget());
+   ButtonControlFrame::Destroy(aContext);
+ }
++
++//---------------------------------------------------------
++// gets the content (an option) by index and then set it as
++// being selected or not selected
++//---------------------------------------------------------
++NS_IMETHODIMP
++nsComboboxControlFrame::OnOptionSelected(int32_t aIndex, bool aSelected) {
++  if (aSelected) {
++    nsAutoScriptBlocker blocker;
++    mDisplayedIndex = aIndex;
++    RedisplayText();
++  } else {
++    AutoWeakFrame weakFrame(this);
++    RedisplaySelectedText();
++    if (weakFrame.IsAlive()) {
++      FireValueChangeEvent();  // Fire after old option is unselected
++    }
++  }
++  return NS_OK;
++}
++
++void nsComboboxControlFrame::FireValueChangeEvent() {
++  // Fire ValueChange event to indicate data value of combo box has changed
++  // FIXME(emilio): This shouldn't be exposed to content.
++  nsContentUtils::AddScriptRunner(new AsyncEventDispatcher(
++      mContent, u"ValueChange"_ns, CanBubble::eYes, ChromeOnlyDispatch::eNo));
++}
+diff --git a/layout/forms/nsComboboxControlFrame.h b/layout/forms/nsComboboxControlFrame.h
+index 7c13f0e31e6e..8ada5fb2680b 100644
+--- a/layout/forms/nsComboboxControlFrame.h
++++ b/layout/forms/nsComboboxControlFrame.h
+@@ -9,7 +9,9 @@
+ 
+ #include "ButtonControlFrame.h"
+ #include "mozilla/Attributes.h"
++#include "nsIAnonymousContentCreator.h"
+ #include "nsIRollupListener.h"
++#include "nsISelectControlFrame.h"
+ #include "nsThreadUtils.h"
+ 
+ namespace mozilla {
+@@ -21,7 +23,8 @@ class HTMLSelectElement;
+ }
+ }  // namespace mozilla
+ 
+-class nsComboboxControlFrame final : public mozilla::ButtonControlFrame {
++class nsComboboxControlFrame final : public mozilla::ButtonControlFrame,
++                                     public nsISelectControlFrame {
+   using Element = mozilla::dom::Element;
+ 
+  public:
+@@ -33,6 +36,11 @@ class nsComboboxControlFrame final : public mozilla::ButtonControlFrame {
+   NS_DECL_QUERYFRAME
+   NS_DECL_FRAMEARENA_HELPERS(nsComboboxControlFrame)
+ 
++  // nsIAnonymousContentCreator
++  nsresult CreateAnonymousContent(nsTArray<ContentInfo>& aElements) final;
++  void AppendAnonymousContentTo(nsTArray<nsIContent*>& aElements,
++                                uint32_t aFilter) final;
++
+ #ifdef ACCESSIBILITY
+   mozilla::a11y::AccType AccessibleType() final;
+ #endif
+@@ -60,9 +68,21 @@ class nsComboboxControlFrame final : public mozilla::ButtonControlFrame {
+   }
+ #endif
+ 
++  /**
++   * @note This method might destroy |this|.
++   */
++  void FireValueChangeEvent();
++  nsresult RedisplaySelectedText();
++
+   bool IsDroppedDown() const;
+-  // Return true if we should render a dropdown button.
+-  bool HasDropDownButton() const;
++
++  // nsISelectControlFrame
++  NS_IMETHOD AddOption(int32_t index) final;
++  NS_IMETHOD RemoveOption(int32_t index) final;
++  NS_IMETHOD DoneAddingChildren(bool aIsDone) final;
++  NS_IMETHOD OnOptionSelected(int32_t aIndex, bool aSelected) final;
++  NS_IMETHOD_(void)
++  OnSetSelectedIndex(int32_t aOldIndex, int32_t aNewIndex) final;
+ 
+   int32_t CharCountOfLargestOptionForInflation() const;
+ 
+@@ -71,9 +91,12 @@ class nsComboboxControlFrame final : public mozilla::ButtonControlFrame {
+   friend class nsAsyncResize;
+   friend class nsResizeDropdownAtFinalPosition;
+ 
++  // Return true if we should render a dropdown button.
++  bool HasDropDownButton() const;
+   nscoord DropDownButtonISize();
+ 
+-  nscoord GetLongestOptionISize(gfxContext*) const;
++  enum class Type { Longest, Current };
++  nscoord GetOptionISize(gfxContext*, Type) const;
+ 
+   class RedisplayTextEvent : public mozilla::Runnable {
+    public:
+@@ -93,9 +116,17 @@ class nsComboboxControlFrame final : public mozilla::ButtonControlFrame {
+   mozilla::dom::HTMLSelectElement& Select() const;
+   void GetOptionText(uint32_t aIndex, nsAString& aText) const;
+ 
++  // TODO(emilio): Would be nice to either paint the dropmarker as part of the
++  // background somehow, or alternatively rejigger stuff a bit (using flex) so
++  // that we can get rid of the label element.
++  RefPtr<Element> mDisplayLabel;   // Anonymous content for the label
++  RefPtr<Element> mButtonContent;  // Anonymous content for the button
++  nsRevocableEventPtr<RedisplayTextEvent> mRedisplayTextEvent;
++
+   // The inline size of our display area. Used by that frame's reflow to size to
+   // the full inline size except the drop-marker.
+   nscoord mDisplayISize = 0;
++  int32_t mDisplayedIndex = -1;
+   RefPtr<mozilla::HTMLSelectEventListener> mEventListener;
+ };
+ 
+diff --git a/layout/forms/nsFileControlFrame.cpp b/layout/forms/nsFileControlFrame.cpp
+index 899b4f36a809..94de249feee3 100644
+--- a/layout/forms/nsFileControlFrame.cpp
++++ b/layout/forms/nsFileControlFrame.cpp
+@@ -133,8 +133,8 @@ nsresult nsFileControlFrame::CreateAnonymousContent(
+   // NOTE: SetIsNativeAnonymousRoot() has to be called before setting any
+   // attribute.
+   mTextContent->SetIsNativeAnonymousRoot();
+-  mTextContent->SetPseudoElementType(PseudoStyleType::MozFileContent);
+-  RefPtr<nsTextNode> text = doc->CreateEmptyTextNode();
++  RefPtr<nsTextNode> text =
++      new (doc->NodeInfoManager()) nsTextNode(doc->NodeInfoManager());
+   mTextContent->AppendChildTo(text, false, IgnoreErrors());
+ 
+   aElements.AppendElement(mTextContent);
+diff --git a/layout/forms/nsISelectControlFrame.h b/layout/forms/nsISelectControlFrame.h
+index 92dcd0a37494..a55bca29ade8 100644
+--- a/layout/forms/nsISelectControlFrame.h
++++ b/layout/forms/nsISelectControlFrame.h
+@@ -16,7 +16,10 @@ class nsISelectControlFrame : public nsQueryFrame {
+  public:
+   NS_DECL_QUERYFRAME_TARGET(nsISelectControlFrame)
+ 
+-  /** Adds an option to the list at index */
++  /**
++   * Adds an option to the list at index
++   */
++
+   NS_IMETHOD AddOption(int32_t index) = 0;
+ 
+   /**
+@@ -25,10 +28,15 @@ class nsISelectControlFrame : public nsQueryFrame {
+    */
+   NS_IMETHOD RemoveOption(int32_t index) = 0;
+ 
+-  /** Called when the parser is done adding children */
+-  NS_IMETHOD DoneAddingChildren() = 0;
++  /**
++   * Sets whether the parser is done adding children
++   * @param aIsDone whether the parser is done adding children
++   */
++  NS_IMETHOD DoneAddingChildren(bool aIsDone) = 0;
+ 
+-  /** Notify the frame when an option is selected */
++  /**
++   * Notify the frame when an option is selected
++   */
+   NS_IMETHOD OnOptionSelected(int32_t aIndex, bool aSelected) = 0;
+ 
+   /**
+diff --git a/layout/forms/nsListControlFrame.cpp b/layout/forms/nsListControlFrame.cpp
+index c06a9378bd2b..abcc67741663 100644
+--- a/layout/forms/nsListControlFrame.cpp
++++ b/layout/forms/nsListControlFrame.cpp
+@@ -51,6 +51,9 @@ nsListControlFrame::nsListControlFrame(ComputedStyle* aStyle,
+                                        nsPresContext* aPresContext)
+     : ScrollContainerFrame(aStyle, aPresContext, kClassID, false),
+       mChangesSinceDragStart(false),
++      mIsAllContentHere(false),
++      mIsAllFramesHere(false),
++      mHasBeenInitialized(false),
+       mNeedToReset(true),
+       mPostChildrenLoadedReset(false),
+       mMightNeedSecondPass(false),
+@@ -179,6 +182,17 @@ void nsListControlFrame::Reflow(nsPresContext* aPresContext,
+ 
+   SchedulePaint();
+ 
++  // If all the content and frames are here
++  // then initialize it before reflow
++  if (mIsAllContentHere && !mHasBeenInitialized) {
++    if (!mIsAllFramesHere) {
++      CheckIfAllFramesHere();
++    }
++    if (mIsAllFramesHere && !mHasBeenInitialized) {
++      mHasBeenInitialized = true;
++    }
++  }
++
+   MarkInReflow();
+   // Due to the fact that our intrinsic block size depends on the block
+   // sizes of our kids, we end up having to do two-pass reflow, in
+@@ -547,6 +561,20 @@ nsresult nsListControlFrame::HandleEvent(nsPresContext* aPresContext,
+   return ScrollContainerFrame::HandleEvent(aPresContext, aEvent, aEventStatus);
+ }
+ 
++//---------------------------------------------------------
++void nsListControlFrame::SetInitialChildList(ChildListID aListID,
++                                             nsFrameList&& aChildList) {
++  if (aListID == FrameChildListID::Principal) {
++    // First check to see if all the content has been added
++    mIsAllContentHere = Select().IsDoneAddingChildren();
++    if (!mIsAllContentHere) {
++      mIsAllFramesHere = false;
++      mHasBeenInitialized = false;
++    }
++  }
++  ScrollContainerFrame::SetInitialChildList(aListID, std::move(aChildList));
++}
++
+ bool nsListControlFrame::GetMultiple() const {
+   return mContent->AsElement()->HasAttr(nsGkAtoms::multiple);
+ }
+@@ -590,8 +618,9 @@ nsListControlFrame::OnOptionSelected(int32_t aIndex, bool aSelected) {
+ void nsListControlFrame::OnContentReset() { ResetList(true); }
+ 
+ void nsListControlFrame::ResetList(bool aAllowScrolling) {
+-  // if all the frames aren't here don't bother reseting
+-  if (!Select().IsDoneAddingChildren()) {
++  // if all the frames aren't here
++  // don't bother reseting
++  if (!mIsAllFramesHere) {
+     return;
+   }
+ 
+@@ -649,23 +678,55 @@ uint32_t nsListControlFrame::GetNumberOfOptions() {
+ //----------------------------------------------------------------------
+ // nsISelectControlFrame
+ //----------------------------------------------------------------------
++bool nsListControlFrame::CheckIfAllFramesHere() {
++  // XXX Need to find a fail proof way to determine that
++  // all the frames are there
++  mIsAllFramesHere = true;
++
++  // now make sure we have a frame each piece of content
++
++  return mIsAllFramesHere;
++}
+ 
+ NS_IMETHODIMP
+-nsListControlFrame::DoneAddingChildren() {
+-  ResetList(true);
++nsListControlFrame::DoneAddingChildren(bool aIsDone) {
++  mIsAllContentHere = aIsDone;
++  if (mIsAllContentHere) {
++    // Here we check to see if all the frames have been created
++    // for all the content.
++    // If so, then we can initialize;
++    if (!mIsAllFramesHere) {
++      // if all the frames are now present we can initialize
++      if (CheckIfAllFramesHere()) {
++        mHasBeenInitialized = true;
++        ResetList(true);
++      }
++    }
++  }
+   return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+ nsListControlFrame::AddOption(int32_t aIndex) {
++  if (!mIsAllContentHere) {
++    mIsAllContentHere = Select().IsDoneAddingChildren();
++    if (!mIsAllContentHere) {
++      mIsAllFramesHere = false;
++      mHasBeenInitialized = false;
++    } else {
++      mIsAllFramesHere =
++          (aIndex == static_cast<int32_t>(GetNumberOfOptions() - 1));
++    }
++  }
++
+   // Make sure we scroll to the selected option as needed
+   mNeedToReset = true;
+ 
+-  if (!Select().IsDoneAddingChildren()) {
++  if (!mHasBeenInitialized) {
+     return NS_OK;
+   }
+ 
+-  mPostChildrenLoadedReset = true;
++  mPostChildrenLoadedReset = mIsAllContentHere;
+   return NS_OK;
+ }
+ 
+@@ -746,12 +807,14 @@ bool nsListControlFrame::ToggleOptionSelectedFromFrame(int32_t aIndex) {
+ 
+ // Dispatch event and such
+ bool nsListControlFrame::UpdateSelection() {
+-  if (Select().IsDoneAddingChildren()) {
++  if (mIsAllFramesHere) {
+     // if it's a combobox, display the new text. Note that after
+     // FireOnInputAndOnChange we might be dead, as that can run script.
+     AutoWeakFrame weakFrame(this);
+-    RefPtr listener = mEventListener;
+-    listener->FireOnInputAndOnChange();
++    if (mIsAllContentHere) {
++      RefPtr listener = mEventListener;
++      listener->FireOnInputAndOnChange();
++    }
+     return weakFrame.IsAlive();
+   }
+   return true;
+diff --git a/layout/forms/nsListControlFrame.h b/layout/forms/nsListControlFrame.h
+index 6ca4578e4c29..1f17fce04152 100644
+--- a/layout/forms/nsListControlFrame.h
++++ b/layout/forms/nsListControlFrame.h
+@@ -50,6 +50,8 @@ class nsListControlFrame final : public mozilla::ScrollContainerFrame,
+                        mozilla::WidgetGUIEvent* aEvent,
+                        nsEventStatus* aEventStatus) final;
+ 
++  void SetInitialChildList(ChildListID aListID, nsFrameList&& aChildList) final;
++
+   nscoord IntrinsicISize(const mozilla::IntrinsicSizeInput& aInput,
+                          mozilla::IntrinsicISizeType aType) final;
+ 
+@@ -97,7 +99,7 @@ class nsListControlFrame final : public mozilla::ScrollContainerFrame,
+   NS_IMETHOD AddOption(int32_t index) final;
+   NS_IMETHOD RemoveOption(int32_t index) final;
+   MOZ_CAN_RUN_SCRIPT_BOUNDARY
+-  NS_IMETHOD DoneAddingChildren() final;
++  NS_IMETHOD DoneAddingChildren(bool aIsDone) final;
+ 
+   /**
+    * Gets the content (an option) by index and then set it as
+@@ -281,6 +283,9 @@ class nsListControlFrame final : public mozilla::ScrollContainerFrame,
+   nscoord mBSizeOfARow = -1;
+   bool mChangesSinceDragStart : 1;
+ 
++  bool mIsAllContentHere : 1;
++  bool mIsAllFramesHere : 1;
++  bool mHasBeenInitialized : 1;
+   bool mNeedToReset : 1;
+   bool mPostChildrenLoadedReset : 1;
+ 
+diff --git a/layout/generic/FrameClasses.py b/layout/generic/FrameClasses.py
+index a24f360a85d0..3dc827d7fbc9 100644
+--- a/layout/generic/FrameClasses.py
++++ b/layout/generic/FrameClasses.py
+@@ -55,7 +55,7 @@ FRAME_CLASSES = [
+     Frame("nsColorControlFrame", "ColorControl", REPLACED | LEAF),
+     Frame("nsColumnSetFrame", "ColumnSet", COMMON),
+     Frame("ColumnSetWrapperFrame", "ColumnSetWrapper", BLOCK | BFC),
+-    Frame("nsComboboxControlFrame", "ComboboxControl", REPLACED),
++    Frame("nsComboboxControlFrame", "ComboboxControl", REPLACED | LEAF),
+     Frame("ComboboxLabelFrame", "Block", BLOCK),
+     Frame("nsContinuingTextFrame", "Text", TEXT),
+     Frame("nsDateTimeControlFrame", "DateTimeControl", REPLACED),
+diff --git a/layout/generic/test/mochitest.toml b/layout/generic/test/mochitest.toml
+index 22c70e05e326..301e4b3b2c36 100644
+--- a/layout/generic/test/mochitest.toml
++++ b/layout/generic/test/mochitest.toml
+@@ -23,6 +23,8 @@ support-files = [
+ 
+ ["test_bug290397.html"]
+ 
++["test_bug323656.html"]
++
+ ["test_bug344830.html"]
+ support-files = ["bug344830_testembed.svg"]
+ 
+diff --git a/layout/generic/test/test_bug323656.html b/layout/generic/test/test_bug323656.html
+new file mode 100644
+index 000000000000..ec0f93609dda
+--- /dev/null
++++ b/layout/generic/test/test_bug323656.html
+@@ -0,0 +1,51 @@
++<!DOCTYPE HTML>
++<html>
++<!--
++https://bugzilla.mozilla.org/show_bug.cgi?id=323656
++-->
++<head>
++  <title>Test for Bug 323656</title>
++  <script src="/tests/SimpleTest/SimpleTest.js"></script>        
++  <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css" />
++    <style>
++      /**
++       * The idea is that "color" inherits by default while "border-color" does
++       * not.  So if the former is red and the latter is green on a parent, and
++       * the child's border-color is set to "inherit", it'll be green only if
++       * the child is inheriting from the parent.  If not, it'll either be
++       * whatever the border-color is on what it's inheriting from, which will
++       * be red if what it's inheriting from has the default (currentColor)
++       *border-color).
++       */
++      
++      /* 't' for "test" */
++      #display, #display *
++        { color: red; border: 0px hidden red; background: transparent }
++      #display .t { border-color: green }
++      #display .t > :first-child
++        { border-color: inherit; border-style: solid; border-width: 10px }
++    </style>
++</head>
++<body>
++<a target="_blank" href="https://bugzilla.mozilla.org/show_bug.cgi?id=323656">Mozilla Bug 323656</a>
++<p id="display">
++  <select size="1" class="t">
++    <option id="testOption"></option>
++  </select>
++</p>
++<div id="content" style="display: none">
++  
++</div>
++<pre id="test">
++<script class="testbody" type="text/javascript">
++
++/** Test for Bug 323656 */
++var s = document.defaultView.getComputedStyle($("testOption"));
++is(s.borderRightColor, "rgb(0, 128, 0)", "Inheritance broken");
++
++
++</script>
++</pre>
++</body>
++</html>
++
+diff --git a/layout/reftests/bugs/323656-3-ref.html b/layout/reftests/bugs/323656-3-ref.html
+index 1bfad8dac8be..22786b95022f 100644
+--- a/layout/reftests/bugs/323656-3-ref.html
++++ b/layout/reftests/bugs/323656-3-ref.html
+@@ -32,6 +32,9 @@
+     <button class="t"><div></div></button>
+     <div style="overflow: auto" class="t"><div></div></div>
+     <div style="column-count: 2" class="t"><div></div></div>
++    <select size="2" class="t">
++      <option></option>
++    </select>
+ 
+     <div class="t"><div></div></div>
+     <span class="t"><div></div></span>
+@@ -40,6 +43,9 @@
+     <button class="t"><div></div></button>
+     <div style="overflow: auto" class="t"><div></div></div>
+     <div style="column-count: 2" class="t"><div></div></div>
++    <select size="2" class="t">
++      <option></option>
++    </select>
+ 
+     <span class="t d2"><div></div><span></span></span>
+     <span style="position: relative" class="t d2"><div></div><span></span></span>
+diff --git a/layout/reftests/bugs/323656-3.html b/layout/reftests/bugs/323656-3.html
+index 389b0636bbe3..090c7b82fb09 100644
+--- a/layout/reftests/bugs/323656-3.html
++++ b/layout/reftests/bugs/323656-3.html
+@@ -63,6 +63,9 @@
+     <button class="t"><div></div></button>
+     <div style="overflow: auto" class="t"><div></div></div>
+     <div style="column-count: 2" class="t"><div></div></div>
++    <select size="2" class="t">
++      <option></option>
++    </select>
+ 
+     <div class="t d"></div>
+     <span class="t d"></span>
+@@ -71,6 +74,9 @@
+     <button class="t d"></button>
+     <div style="overflow: auto" class="t d"></div>
+     <div style="column-count: 2" class="t d"></div>
++    <select size="2" class="t d">
++      <option></option>
++    </select>
+ 
+     <span class="t d2"><div></div><span></span></span>
+     <span style="position: relative" class="t d2"><div></div><span></span></span>
+diff --git a/layout/style/BuiltInStyleSheetList.inc b/layout/style/BuiltInStyleSheetList.inc
+index f50be7d0d64a..9e41e548cc1f 100644
+--- a/layout/style/BuiltInStyleSheetList.inc
++++ b/layout/style/BuiltInStyleSheetList.inc
+@@ -34,4 +34,3 @@ STYLE_SHEET(XUL, "chrome://global/content/xul.css", UAUnshared)
+ STYLE_SHEET(AccessibleCaret, "resource://gre-resources/accessiblecaret.css",
+             Author)
+ STYLE_SHEET(Details, "resource://gre-resources/details.css", Author)
+-STYLE_SHEET(Select, "resource://gre-resources/select.css", Author)
+diff --git a/layout/style/jar.mn b/layout/style/jar.mn
+index 8920bd0d7cac..ae320ab4a21d 100644
+--- a/layout/style/jar.mn
++++ b/layout/style/jar.mn
+@@ -12,7 +12,6 @@ toolkit.jar:
+    res/forms.css                             (res/forms.css)
+    res/accessiblecaret.css                   (res/accessiblecaret.css)
+    res/details.css                           (res/details.css)
+-   res/select.css                            (res/select.css)
+  #ifdef ANDROID
+    res/accessiblecaret-normal.svg            (res/accessiblecaret-normal.svg)
+    res/accessiblecaret-tilt-left.svg         (res/accessiblecaret-tilt-left.svg)
+diff --git a/layout/style/res/forms.css b/layout/style/res/forms.css
+index 012025f4f422..e1dfabefddff 100644
+--- a/layout/style/res/forms.css
++++ b/layout/style/res/forms.css
+@@ -238,30 +238,6 @@ select {
+   -moz-default-appearance: menulist;
+ }
+ 
+-select::-moz-select-content {
+-  display: inline-block;
+-  overflow: clip;
+-  pointer-events: none;
+-  cursor: unset;
+-  /* Required for making nsIFrame::PeekOffset treat anonymous content in
+-   * <select> as not selectable. */
+-  user-select: none;
+-}
+-
+-select::-moz-select-picker-icon {
+-  display: inline-block;
+-  appearance: auto;
+-  -moz-default-appearance: -moz-menulist-arrow-button;
+-  pointer-events: none;
+-  -webkit-text-security: none;
+-  max-block-size: 100%;
+-
+-  /* Make sure to align properly with the display frame.  Note that we want the
+-   * baseline of the combobox to match the baseline of the label, so the
+-   * dropmarker is what gets the vertical-align. */
+-  vertical-align: top;
+-}
+-
+ select:-moz-select-list-box {
+   overflow-inline: hidden;
+   overflow-block: scroll;
+@@ -277,6 +253,36 @@ select:-moz-select-list-box {
+   }
+ }
+ 
++select > button {
++  padding: 0;
++  border: 0;
++  appearance: auto;
++  -moz-default-appearance: -moz-menulist-arrow-button;
++  pointer-events: none;
++
++  /* Draw the arrow in the select's color */
++  color: inherit;
++
++  /* We don't want the button to grow the line-height */
++  font: inherit;
++  max-block-size: 100%;
++
++  /* Make sure to align properly with the display frame.  Note that we want the
++   * baseline of the combobox to match the baseline of the label, so the
++   * dropmarker is what gets the vertical-align. */
++  vertical-align: top;
++}
++
++select > label {
++  display: inline-block;
++  overflow: clip;
++  pointer-events: none;
++  cursor: unset;
++  /* Required for making nsIFrame::PeekOffset treat anonymous content in
++   * <select> as not selectable. */
++  user-select: none;
++}
++
+ option[label]::before {
+   content: attr(label);
+ }
+@@ -579,7 +585,7 @@ input[type="file"] {
+   padding: unset;
+ }
+ 
+-::-moz-file-content {
++input[type="file"] > label {
+   display: inline-block;
+   min-inline-size: 12em;
+   text-align: match-parent;
+@@ -612,7 +618,7 @@ input[type="file"] {
+  */
+ ::placeholder,
+ ::-moz-text-control-editing-root,
+-::-moz-select-content,
++select > label,
+ optgroup::before {
+   unicode-bidi: inherit;
+   text-overflow: inherit;
+diff --git a/layout/style/res/select.css b/layout/style/res/select.css
+deleted file mode 100644
+index 61aec25cc86f..000000000000
+--- a/layout/style/res/select.css
++++ /dev/null
+@@ -1,8 +0,0 @@
+-/* This Source Code Form is subject to the terms of the Mozilla Public
+- * License, v. 2.0. If a copy of the MPL was not distributed with this
+- * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+-
+-:host(:not(:-moz-select-list-box)) slot {
+-  /* This is the slot where the <option>s (and all children, effectively) are */
+-  display: none;
+-}
+diff --git a/servo/components/style/gecko/non_ts_pseudo_class_list.rs b/servo/components/style/gecko/non_ts_pseudo_class_list.rs
+index 9e9a4f49c6b9..5b14c786931a 100644
+--- a/servo/components/style/gecko/non_ts_pseudo_class_list.rs
++++ b/servo/components/style/gecko/non_ts_pseudo_class_list.rs
+@@ -30,7 +30,7 @@ macro_rules! apply_non_ts_list {
+         $apply_macro! {
+             [
+                 ("-moz-table-border-nonzero", MozTableBorderNonzero, _, PSEUDO_CLASS_ENABLED_IN_UA_SHEETS),
+-                ("-moz-select-list-box", MozSelectListBox, _, PSEUDO_CLASS_ENABLED_IN_UA_SHEETS_AND_CHROME),
++                ("-moz-select-list-box", MozSelectListBox, _, PSEUDO_CLASS_ENABLED_IN_UA_SHEETS),
+                 ("link", Link, UNVISITED, _),
+                 ("any-link", AnyLink, VISITED_OR_UNVISITED, _),
+                 ("visited", Visited, VISITED, _),
+diff --git a/widget/Theme.cpp b/widget/Theme.cpp
+index 70011fed0723..d0958e5b709c 100644
+--- a/widget/Theme.cpp
++++ b/widget/Theme.cpp
+@@ -28,7 +28,6 @@
+ #include "nsLayoutUtils.h"
+ #include "nsRangeFrame.h"
+ #include "PathHelpers.h"
+-#include "nsComboboxControlFrame.h"
+ #include "ScrollbarDrawingAndroid.h"
+ #include "ScrollbarDrawingCocoa.h"
+ #include "ScrollbarDrawingGTK.h"
+@@ -1522,10 +1521,6 @@ LayoutDeviceIntSize Theme::GetMinimumWidgetSize(nsPresContext* aPresContext,
+   LayoutDeviceIntSize result;
+   switch (aAppearance) {
+     case StyleAppearance::MozMenulistArrowButton:
+-      if (nsComboboxControlFrame* cf = do_QueryFrame(aFrame->GetParent());
+-          cf && !cf->HasDropDownButton()) {
+-        break;
+-      }
+       result.width = (kMinimumDropdownArrowButtonWidth * dpiRatio).Rounded();
+       break;
+     case StyleAppearance::SpinnerUpbutton:

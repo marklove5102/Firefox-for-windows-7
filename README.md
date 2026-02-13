@@ -7,7 +7,7 @@ Firefox 115 is the last version to support Windows 7. This repository includes p
 
 ## Platform Support
 
-Windows 7, 8, 10, 11 or Windows Vista with Service Pack 2 (SP2) and Platform Update.
+Windows 7, 8, 10, 11.
 
 ![](imgs/snapshot.png)
 

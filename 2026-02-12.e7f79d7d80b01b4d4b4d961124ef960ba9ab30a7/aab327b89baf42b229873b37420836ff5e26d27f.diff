@@ -1,0 +1,28 @@
+diff --git a/servo/components/style/gecko/pseudo_elements.toml b/servo/components/style/gecko/pseudo_elements.toml
+index bdda60c5be0a..3d743dbe4aff 100644
+--- a/servo/components/style/gecko/pseudo_elements.toml
++++ b/servo/components/style/gecko/pseudo_elements.toml
+@@ -62,6 +62,11 @@ CSS_PSEUDO_ELEMENT(mozSnapshotContainingBlock,
+ [-moz-snapshot-containing-block]
+ enabled_in = "ua"
+ 
++# XXXbz should we really allow random content to style these?  Maybe
++# use our flags to prevent that?
++[-moz-focus-inner]
++enabled_in = "ua"
++
+ # HTML5 Forms pseudo elements
+ [-moz-number-spin-box]
+ supports_user_action_state = true
+diff --git a/xpcom/ds/StaticAtoms.py b/xpcom/ds/StaticAtoms.py
+index 6609d62abfc4..a57dfe2d1f0a 100644
+--- a/xpcom/ds/StaticAtoms.py
++++ b/xpcom/ds/StaticAtoms.py
+@@ -2531,6 +2531,7 @@ STATIC_ATOMS = [
+     Atom("PseudoStyle_ViewTransitionOld", ":view-transition-old"),
+     Atom("PseudoStyle_ViewTransitionNew", ":view-transition-new"),
+     Atom("PseudoStyle_MozSnapshotContainingBlock", ":-moz-snapshot-containing-block"),
++    Atom("PseudoStyle_MozFocusInner", ":-moz-focus-inner"),
+     Atom("PseudoStyle_MozNumberSpinBox", ":-moz-number-spin-box"),
+     Atom("PseudoStyle_MozNumberSpinUp", ":-moz-number-spin-up"),
+     Atom("PseudoStyle_MozNumberSpinDown", ":-moz-number-spin-down"),

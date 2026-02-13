@@ -1,0 +1,1 @@
+Bug 2014944 - Remove unused additional computed style APIs. r=jwatt    2026-02-06 18:02:14    db0bb836416dcd486ec8900d2e4c7e338b44dcc0
